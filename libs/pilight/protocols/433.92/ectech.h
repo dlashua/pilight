@@ -16,12 +16,12 @@
 	along with pilight. If not, see	<http://www.gnu.org/licenses/>
 */
 
-#ifndef _PROTOCOL_DJL_H_
-#define _PROTOCOL_DJL_H_
+#ifndef _PROTOCOL_ECTECH_H_
+#define _PROTOCOL_ECTEECH_H_
 
 #include "../protocol.h"
 
-struct protocol_t *djl_switch;
-void djlSwitchInit(void);
+struct protocol_t *ectech_switch;
+void ectechSwitchInit(void);
 
 #endif
