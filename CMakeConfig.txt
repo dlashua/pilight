@@ -12,6 +12,7 @@ set(PROTOCOL_BRENNENSTUHL_SWITCH ON CACHE BOOL "support for the Brennenstuhl swi
 set(PROTOCOL_BYEBYESTANDBY_SWITCH ON CACHE BOOL "support for the ByeByeStandBy switch protocol")
 set(PROTOCOL_CLARUS ON CACHE BOOL "support for the Clarus switch protocol")
 set(PROTOCOL_ECTECH ON CACHE BOOL "support for the EC Tech switch protocol")
+set(PROTOCOL_ETEKCITY ON CACHE BOOL "support for the ETEKCity switch protocol")
 set(PROTOCOL_CLEVERWATTS ON CACHE BOOL "support for the Cleverwatts switch protocol")
 set(PROTOCOL_COCO_SWITCH ON CACHE BOOL "support for the new ClickOnClickOff switch protocol")
 set(PROTOCOL_COGEX_SWITCH ON CACHE BOOL "support for the Cogex switch protocol")
