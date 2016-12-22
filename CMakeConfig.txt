@@ -11,6 +11,7 @@ set(PROTOCOL_BMP180 ON CACHE BOOL "support for the BMP180/085 i2c barometric pre
 set(PROTOCOL_BRENNENSTUHL_SWITCH ON CACHE BOOL "support for the Brennenstuhl switch protocol")
 set(PROTOCOL_BYEBYESTANDBY_SWITCH ON CACHE BOOL "support for the ByeByeStandBy switch protocol")
 set(PROTOCOL_CLARUS ON CACHE BOOL "support for the Clarus switch protocol")
+set(PROTOCOL_DJL ON CACHE BOOL "support for the DJL switch protocol")
 set(PROTOCOL_CLEVERWATTS ON CACHE BOOL "support for the Cleverwatts switch protocol")
 set(PROTOCOL_COCO_SWITCH ON CACHE BOOL "support for the new ClickOnClickOff switch protocol")
 set(PROTOCOL_COGEX_SWITCH ON CACHE BOOL "support for the Cogex switch protocol")
