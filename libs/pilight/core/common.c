@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#include <libgen.h>
+#include <assert.h>
 #ifdef _WIN32
 	#if _WIN32_WINNT < 0x0501
 		#undef _WIN32_WINNT
@@ -38,29 +38,34 @@
 	#include <pwd.h>
 	#include <sys/mount.h>
 	#include <sys/ioctl.h>
+	#include <pthread.h>
+	#include <unistd.h>
 #endif
-#include <dirent.h>
+#ifdef __sun__
+#include <procfs.h>
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #ifndef __USE_XOPEN
 	#define __USE_XOPEN
 #endif
-#include <sys/time.h>
 #include <time.h>
-#include <pthread.h>
+
+#if defined(WIN32) || defined(WIN64)
+	// Copied from linux libc sys/stat.h:
+	#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+	#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
 
 #include "mem.h"
 #include "common.h"
 #include "network.h"
 #include "log.h"
+#include "../psutil/psutil.h"
 
 char *progname = NULL;
-#ifndef _WIN32
-static int procmounted = 0;
-#endif
 
 static const char base64table[] = {
 	'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
@@ -73,18 +78,23 @@ static const char base64table[] = {
 	'4', '5', '6', '7', '8', '9', '+', '/'
 };
 
-static pthread_mutex_t atomic_lock;
+static uv_mutex_t atomic_lock;
+static int atomic_init = 0;
 
 void atomicinit(void) {
-	pthread_mutex_init(&atomic_lock, NULL);
+	if(atomic_init == 0) {
+		atomic_init = 1;
+		uv_mutex_init(&atomic_lock);
+	}
 }
 
 void atomiclock(void) {
-	pthread_mutex_lock(&atomic_lock);
+	atomicinit();
+	uv_mutex_lock(&atomic_lock);
 }
 
 void atomicunlock(void) {
-	pthread_mutex_unlock(&atomic_lock);
+	uv_mutex_unlock(&atomic_lock);
 }
 
 void array_free(char ***array, int len) {
@@ -97,42 +107,11 @@ void array_free(char ***array, int len) {
 	}
 }
 
-int getnrcpu(void) {
-  long nprocs = -1;
-  long nprocs_max = -1;
-#ifdef _WIN32
-	#ifndef _SC_NPROCESSORS_ONLN
-		SYSTEM_INFO info;
-		GetSystemInfo(&info);
-		#define sysconf(a) info.dwNumberOfProcessors
-		#define _SC_NPROCESSORS_ONLN
-	#endif
-#endif
-
-#ifdef _SC_NPROCESSORS_ONLN
-  nprocs = sysconf(_SC_NPROCESSORS_ONLN);
-  if(nprocs < 1) {
-    logprintf(LOG_ERR, "could not determine number of CPU cores online, defaulting to one");
-		return 1;
-  }
-
-  nprocs_max = sysconf(_SC_NPROCESSORS_CONF);
-  if(nprocs_max < 1) {
-    logprintf(LOG_ERR, "could not determine number of CPU cores configured, defaulting to one");
-		return 1;
-  }
-  return nprocs;
-#else
-  logprintf(LOG_ERR, "could not determine number of CPU cores configured, defaulting to one");
-	return -1;
-#endif
-}
-
 unsigned int explode(char *str, const char *delimiter, char ***output) {
 	if(str == NULL || output == NULL) {
 		return 0;
 	}
-	unsigned int i = 0, n = 0, y = 0;
+	int i = 0, n = 0, y = 0;
 	size_t l = 0, p = 0;
 	if(delimiter != NULL) {
 		l = strlen(str);
@@ -142,10 +121,10 @@ unsigned int explode(char *str, const char *delimiter, char ***output) {
 		if(strncmp(&str[i], delimiter, p) == 0) {
 			if((i-y) > 0) {
 				if((*output = REALLOC(*output, sizeof(char *)*(n+1))) == NULL) {
-					OUT_OF_MEMORY
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				if(((*output)[n] = MALLOC((i-y)+1)) == NULL) {
-					OUT_OF_MEMORY
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				strncpy((*output)[n], &str[y], i-y);
 				(*output)[n][(i-y)] = '\0';
@@ -157,10 +136,10 @@ unsigned int explode(char *str, const char *delimiter, char ***output) {
 	}
 	if(strlen(&str[y]) > 0) {
 		if((*output = REALLOC(*output, sizeof(char *)*(n+1))) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		if(((*output)[n] = MALLOC((i-y)+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strncpy((*output)[n], &str[y], i-y);
 		(*output)[n][(i-y)] = '\0';
@@ -170,6 +149,31 @@ unsigned int explode(char *str, const char *delimiter, char ***output) {
 }
 
 #ifdef _WIN32
+void usleep(unsigned long value) {
+	struct timeval tv;
+	tv.tv_sec = value / 1000000;
+	tv.tv_usec = value % 1000000;
+	select(0, NULL, NULL, NULL, &tv);
+}
+
+int gettimeofday(struct timeval *tp, struct timezone *tzp) {
+	// Note: some broken versions only have 8 trailing zero's, the correct epoch has 9 trailing zero's
+	static const uint64_t EPOCH = ((uint64_t) 116444736000000000ULL);
+
+	SYSTEMTIME  system_time;
+	FILETIME    file_time;
+	uint64_t    time;
+
+	GetSystemTime( &system_time );
+	SystemTimeToFileTime( &system_time, &file_time );
+	time =  ((uint64_t)file_time.dwLowDateTime )      ;
+	time += ((uint64_t)file_time.dwHighDateTime) << 32;
+
+	tp->tv_sec  = (long) ((time - EPOCH) / 10000000L);
+	tp->tv_usec = (long) (system_time.wMilliseconds * 1000);
+	return 0;
+}
+
 int check_instances(const wchar_t *prog) {
 	HANDLE m_hStartEvent = CreateEventW(NULL, FALSE, FALSE, prog);
 	if(m_hStartEvent == NULL) {
@@ -196,11 +200,16 @@ int setenv(const char *name, const char *value, int overwrite) {
 	if(value == NULL) {
 		return unsetenv(name);
 	}
-	char c[strlen(name)+1+strlen(value)+1]; // one for "=" + one for term zero
+	char *c = MALLOC(strlen(name)+1+strlen(value)+1); // one for "=" + one for term zero
+	if(c == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
 	strcat(c, name);
 	strcat(c, "=");
 	strcat(c, value);
-	return putenv(c);
+	int r = putenv(c);
+	FREE(c);
+	return r;
 }
 
 int unsetenv(const char *name) {
@@ -208,191 +217,33 @@ int unsetenv(const char *name) {
 		errno = EINVAL;
 		return -1;
 	}
-	char c[strlen(name)+1+1]; // one for "=" + one for term zero
+	char *c = MALLOC(strlen(name)+1+1); // one for "=" + one for term zero
+	if(c == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
 	strcat(c, name);
 	strcat(c, "=");
-	return putenv(c);
+	int r = putenv(c);
+	FREE(c);
+	return r;
 }
+#endif
 
 int isrunning(const char *program) {
-	DWORD aiPID[1000], iCb = 1000;
-	DWORD iCbneeded = 0;
-	int iNumProc = 0, i = 0;
-	char szName[MAX_PATH];
-	int iLenP = 0;
-	HANDLE hProc;
-	HMODULE hMod;
-
-	iLenP = strlen(program);
-	if(iLenP < 1 || iLenP > MAX_PATH)
-		return -1;
-
-	if(EnumProcesses(aiPID, iCb, &iCbneeded) <= 0) {
+	if(program == NULL) {
 		return -1;
 	}
+	int i = 0;
+	char name[255], *p = name;
+	memset(&name, '\0', 255);
 
-	iNumProc = iCbneeded / sizeof(DWORD);
-
-	for(i=0;i<iNumProc;i++) {
-		strcpy(szName, "Unknown");
-		hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, aiPID[i]);
-
-		if(hProc) {
-			if(EnumProcessModules(hProc, &hMod, sizeof(hMod), &iCbneeded)) {
-				GetModuleBaseName(hProc, hMod, szName, MAX_PATH);
+	for(i=0;i<psutil_max_pid();i++) {
+		if(psutil_proc_name(i, &p) == 0) {
+			if(strcmp(name, program) == 0) {
+				return i;
 			}
 		}
-		CloseHandle(hProc);
-
-		if(strstr(szName, program) != NULL) {
-			return aiPID[i];
-		}
 	}
-
-	return -1;
-}
-#else
-int isrunning(const char *program) {
-	int pid = -1;
-	char *tmp = MALLOC(strlen(program)+1);
-	if(tmp == NULL) {
-		OUT_OF_MEMORY
-	}
-	strcpy(tmp, program);
-	if((pid = findproc(tmp, NULL, 1)) > 0) {
-		FREE(tmp);
-		return pid;
-	}
-	FREE(tmp);
-	return -1;
-}
-#endif
-
-#ifdef __FreeBSD__
-int findproc(char *cmd, char *args, int loosely) {
-#else
-pid_t findproc(char *cmd, char *args, int loosely) {
-#endif
-#ifndef _WIN32
-	DIR* dir;
-	struct dirent* ent;
-	char fname[512], cmdline[1024];
-	int fd = 0, ptr = 0, match = 0, i = 0, y = '\n', x = 0;
-
-	if(procmounted == 0) {
-		if((dir = opendir("/proc"))) {
-			i = 0;
-			while((ent = readdir(dir)) != NULL) {
-				i++;
-			}
-			closedir(dir);
-			if(i == 2) {
-#ifdef __FreeBSD__
-				mount("procfs", "/proc", 0, "");
-#else
-				mount("proc", "/proc", "procfs", 0, "");
-#endif
-				if((dir = opendir("/proc"))) {
-					i = 0;
-					while((ent = readdir(dir)) != NULL) {
-						i++;
-					}
-					closedir(dir);
-					if(i == 2) {
-						logprintf(LOG_ERR, "/proc filesystem not properly mounted");
-						return -1;
-					}
-				}
-			}
-		} else {
-			logprintf(LOG_ERR, "/proc filesystem not properly mounted");
-			return -1;
-		}
-		procmounted = 1;
-	}
-	if((dir = opendir("/proc"))) {
-		while((ent = readdir(dir)) != NULL) {
-			if(isNumeric(ent->d_name) == 0) {
-				snprintf(fname, 512, "/proc/%s/cmdline", ent->d_name);
-				if((fd = open(fname, O_RDONLY, 0)) > -1) {
-					memset(cmdline, '\0', sizeof(cmdline));
-					if((ptr = (int)read(fd, cmdline, sizeof(cmdline)-1)) > -1) {
-						i = 0, match = 0, y = '\n';
-						/* Replace all NULL terminators for newlines */
-						for(i=0;i<ptr-1;i++) {
-							if(i < ptr && cmdline[i] == '\0') {
-								cmdline[i] = (char)y;
-								y = ' ';
-							}
-						}
-
-						match = 0;
-						/* Check if program matches */
-						char **array = NULL;
-						unsigned int n = explode(cmdline, "\n", &array);
-
-						if(n == 0) {
-							close(fd);
-							continue;
-						}
-						if((strcmp(array[0], cmd) == 0 && loosely == 0)
-							 || (strstr(array[0], cmd) != NULL && loosely == 1)) {
-							match++;
-						}
-
-						if(args != NULL && match == 1) {
-							if(n <= 1) {
-								close(fd);
-								for(x=0;x<n;x++) {
-									FREE(array[x]);
-								}
-								if(n > 0) {
-									FREE(array);
-								}
-								continue;
-							}
-							if(strcmp(array[1], args) == 0) {
-								match++;
-							}
-
-							if(match == 2) {
-								pid_t pid = (pid_t)atol(ent->d_name);
-								close(fd);
-								closedir(dir);
-								for(x=0;x<n;x++) {
-									FREE(array[x]);
-								}
-								if(n > 0) {
-									FREE(array);
-								}
-								return pid;
-							}
-						} else if(match > 0) {
-							pid_t pid = (pid_t)atol(ent->d_name);
-							close(fd);
-							closedir(dir);
-							for(x=0;x<n;x++) {
-								FREE(array[x]);
-							}
-							if(n > 0) {
-								FREE(array);
-							}
-							return pid;
-						}
-						for(x=0;x<n;x++) {
-							FREE(array[x]);
-						}
-						if(n > 0) {
-							FREE(array);
-						}
-					}
-					close(fd);
-				}
-			}
-		}
-		closedir(dir);
-	}
-#endif
 	return -1;
 }
 
@@ -431,34 +282,6 @@ int name2uid(char const *name) {
 	return -1;
 }
 
-int which(const char *program) {
-	char path[1024];
-	strcpy(path, getenv("PATH"));
-	char **array = NULL;
-	unsigned int n = 0, i = 0;
-	int found = -1;
-
-	n = explode(path, ":", &array);
-	for(i=0;i<n;i++) {
-		char exec[strlen(array[i])+8];
-		strcpy(exec, array[i]);
-		strcat(exec, "/");
-		strcat(exec, program);
-
-		if(access(exec, X_OK) != -1) {
-			found = 0;
-			break;
-		}
-	}
-	for(i=0;i<n;i++) {
-		FREE(array[i]);
-	}
-	if(n > 0) {
-		FREE(array);
-	}
-	return found;
-}
-
 int ishex(int x) {
 	return(x >= '0' && x <= '9') || (x >= 'a' && x <= 'f') || (x >= 'A' && x <= 'F');
 }
@@ -467,6 +290,10 @@ const char *rstrstr(const char* haystack, const char* needle) {
 	char *loc = NULL;
 	char *found = NULL;
 	size_t pos = 0;
+
+	if(haystack == NULL || needle == NULL) {
+		return NULL;
+	}
 
 	while((found = strstr(haystack + pos, needle)) != 0) {
 		loc = found;
@@ -499,7 +326,7 @@ int urldecode(const char *s, char *dec) {
 		c = *s++;
 		if(c == '+') {
 			c = ' ';
-		} else if(c == '%' && (!ishex(*s++) || !ishex(*s++)	|| !sscanf(s - 2, "%2x", &c))) {
+		} else if(c == '%' && (!ishex(*s++) || !ishex(*s++) || !sscanf(s - 2, "%2x", &c))) {
 			return -1;
 		}
 		if(dec) {
@@ -516,12 +343,15 @@ static char to_hex(char code) {
 }
 
 char *urlencode(char *str) {
+	if(str == NULL) {
+		return NULL;
+	}
 	char *pstr = str, *buf = MALLOC(strlen(str) * 3 + 1), *pbuf = buf;
 	while(*pstr) {
 		if(isalnum(*pstr) || *pstr == '-' || *pstr == '_' || *pstr == '.' || *pstr == '~')
 			*pbuf++ = *pstr;
 		else if(*pstr == ' ')
-			*pbuf++ = '+';
+			*pbuf++ = '%', *pbuf++ = '2', *pbuf++ = '0';
 		else
 			*pbuf++ = '%', *pbuf++ = to_hex(*pstr >> 4), *pbuf++ = to_hex(*pstr & 15);
 		pstr++;
@@ -541,7 +371,7 @@ char *base64decode(char *src, size_t len, size_t *decsize) {
 
   dec = MALLOC(0);
   if(dec == NULL) {
-		return NULL;
+		OUT_OF_MEMORY /* LCOV_EXCL_LINE */
 	}
 
   while(len--) {
@@ -621,7 +451,7 @@ char *base64encode(char *src, size_t len) {
 
   enc = MALLOC(0);
   if(enc == NULL) {
-		return NULL;
+		OUT_OF_MEMORY /* LCOV_EXCL_LINE */
 	}
 
   while(len--) {
@@ -669,24 +499,31 @@ char *base64encode(char *src, size_t len) {
   return enc;
 }
 
-void rmsubstr(char *s, const char *r) {
-	while((s=strstr(s, r))) {
-		size_t l = strlen(r);
-		memmove(s, s+l, 1+strlen(s+l));
-	}
-}
-
 char *hostname(void) {
 	char name[255] = {'\0'};
 	char *host = NULL, **array = NULL;
 	unsigned int n = 0, i = 0;
 
-	gethostname(name, 254);
+#ifdef _WIN32
+	WSADATA wsa;
+
+	if(WSAStartup(0x202, &wsa) != 0) {
+		logprintf(LOG_ERR, "WSAStartup");
+		exit(EXIT_FAILURE);
+	}
+#endif	
+	
+	if(gethostname(name, 254) != 0) {
+		/* LCOV_EXCL_START */
+		logprintf(LOG_ERR, "gethostbyname: %s", strerror(errno));
+		return NULL;
+		/* LCOV_EXCL_STOP */
+	}
 	if(strlen(name) > 0) {
 		n = explode(name, ".", &array);
 		if(n > 0) {
 			if((host = MALLOC(strlen(array[0])+1)) == NULL) {
-				OUT_OF_MEMORY
+				OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 			}
 			strcpy(host, array[0]);
 		}
@@ -712,6 +549,7 @@ char *distroname(void) {
 #else
 	int rc = 1;
 	struct stat sb;
+	/* LCOV_EXCL_START */
 	if((rc = stat("/etc/redhat-release", &sb)) == 0) {
 		strcpy(dist, "RedHat/0.0");
 	} else if((rc = stat("/etc/SuSE-release", &sb)) == 0) {
@@ -725,10 +563,11 @@ char *distroname(void) {
 	} else {
 		strcpy(dist, "Unknown/0.0");
 	}
+	/* LCOV_EXCL_STOP */
 #endif
 	if(strlen(dist) > 0) {
 		if((distro = MALLOC(strlen(dist)+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(distro, dist);
 		return distro;
@@ -753,6 +592,7 @@ char *genuuid(char *ifname) {
 			if(fgets(a, 1024, fp) == 0) {
 				break;
 			}
+			/* LCOV_EXCL_START */
 			if(strstr(a, "Serial") != NULL) {
 				sscanf(a, "Serial          : %16s%*[ \n\r]", (char *)&serial);
 				if(strlen(serial) > 0 &&
@@ -767,13 +607,14 @@ char *genuuid(char *ifname) {
 					memmove(&serial[14], &serial[13], 7);
 					serial[13] = '-';
 					if((upnp_id = MALLOC(UUID_LENGTH+1)) == NULL) {
-						OUT_OF_MEMORY
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
 					strcpy(upnp_id, serial);
 					fclose(fp);
 					return upnp_id;
 				}
 			}
+			/* LCOV_EXCL_STOP */
 		}
 		fclose(fp);
 	}
@@ -781,7 +622,7 @@ char *genuuid(char *ifname) {
 #endif
 	if(dev2mac(ifname, &p) == 0) {
 		if((upnp_id = MALLOC(UUID_LENGTH+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		memset(upnp_id, '\0', UUID_LENGTH+1);
 		snprintf(upnp_id, UUID_LENGTH,
@@ -791,62 +632,57 @@ char *genuuid(char *ifname) {
 		return upnp_id;
 	}
 
-	return NULL;
+	return NULL; /* LCOV_EXCL_LINE */
 }
 
 /* Check if a given file exists */
 int file_exists(char *filename) {
+	if(filename == NULL) {
+		return -1;
+	}
 	struct stat sb;
 	return stat(filename, &sb);
 }
 
 /* Check if a given path exists */
 int path_exists(char *fil) {
+	if(fil == NULL) {
+		return -1;
+	}
 	struct stat s;
-	char tmp[strlen(fil)+1];
+	int len = strlen(fil);
+	char *tmp = MALLOC(len+1);
+	if(tmp == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
 	strcpy(tmp, fil);
-
-	atomiclock();
-	/* basename isn't thread safe */
-	char *filename = basename(tmp);
-	atomicunlock();
-
-	char path[(strlen(tmp)-strlen(filename))+1];
-	size_t i = (strlen(tmp)-strlen(filename));
-
-	memset(path, '\0', sizeof(path));
-	memcpy(path, tmp, i);
-	snprintf(path, i, "%s", tmp);
 
 /*
  * dir stat doens't work on windows if path has a trailing slash
  */
 #ifdef _WIN32
-	if(path[i-1] == '\\' || path[i-1] == '/') {
-		path[i-1] = '\0';
+	if(tmp[len-1] == '\\' || tmp[len-1] == '/') {
+		tmp[len-1] = '\0';
 	}
 #endif
 
-	if(strcmp(filename, tmp) != 0) {
-		int err = stat(path, &s);
-		if(err == -1) {
-			if(ENOENT == errno) {
-				return EXIT_FAILURE;
-			} else {
-				return EXIT_FAILURE;
-			}
+	int err = stat(tmp, &s);
+	if(err == -1) {
+		FREE(tmp);
+		return -1;
+	} else {
+		if(S_ISDIR(s.st_mode)) {
+			FREE(tmp);
+			return 0;
 		} else {
-			if(S_ISDIR(s.st_mode)) {
-				return EXIT_SUCCESS;
-			} else {
-				return EXIT_FAILURE;
-			}
+			FREE(tmp);
+			return -1;
 		}
 	}
-	return EXIT_SUCCESS;
+	FREE(tmp);
+	return 0;
 }
 
-/* Copyright (C) 1995 Ian Jackson <iwj10@cus.cam.ac.uk> */
 /* Copyright (C) 1995 Ian Jackson <iwj10@cus.cam.ac.uk> */
 //  1: val > ref
 // -1: val < ref
@@ -922,6 +758,10 @@ int vercmp(char *val, char *ref) {
 }
 
 char *uniq_space(char *str){
+	if(str == NULL) {
+		return NULL;
+	}
+
 	char *from = NULL, *to = NULL;
 	int spc=0;
 	to = from = str;
@@ -956,8 +796,8 @@ int str_replace(char *search, char *replace, char **str) {
 			}
 			nlen = len - (slen - rlen);
 			if(len < nlen) {
-				if(((*str) = REALLOC((*str), (size_t)nlen+1)) == NULL) {
-					OUT_OF_MEMORY
+				if(((*str) = REALLOC((*str), (size_t)nlen+1)) == NULL) { /*LCOV_EXCL_LINE*/
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				memset(&(*str)[len], '\0', (size_t)(nlen-len));
 			}
@@ -977,11 +817,15 @@ int str_replace(char *search, char *replace, char **str) {
 }
 
 int stricmp(char const *a, char const *b) {
+	assert(a != NULL && b != NULL);
+
 	for(;; a++, b++) {
-			int d = tolower(*a) - tolower(*b);
-			if(d != 0 || !*a)
-				return d;
+		int d = tolower(*a) - tolower(*b);
+		if(d != 0 || !*a) {
+			return d;
+		}
 	}
+	return -1;
 }
 
 int file_get_contents(char *file, char **content) {
@@ -989,22 +833,141 @@ int file_get_contents(char *file, char **content) {
 	size_t bytes = 0;
 	struct stat st;
 
+	if(file == NULL || content == NULL) {
+		return -1;
+	}
+
+	if(file_exists(file) == -1) {
+		/*LCOV_EXCL_START*/
+		logprintf(LOG_ERR, "file does not exists: %s", file);
+		return -1;
+		/*LCOV_EXCL_STOP*/
+	}
+	
 	if((fp = fopen(file, "rb")) == NULL) {
+		/*LCOV_EXCL_START*/
 		logprintf(LOG_ERR, "cannot open file: %s", file);
 		return -1;
+		/*LCOV_EXCL_STOP*/
 	}
 
 	fstat(fileno(fp), &st);
 	bytes = (size_t)st.st_size;
 
 	if((*content = CALLOC(bytes+1, sizeof(char))) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 
 	if(fread(*content, sizeof(char), bytes, fp) == -1) {
+		/*LCOV_EXCL_START*/
 		logprintf(LOG_ERR, "cannot read file: %s", file);
 		return -1;
+		/*LCOV_EXCL_STOP*/
 	}
 	fclose(fp);
 	return 0;
+}
+
+/*
+ * 1: milliseconds
+ * 2: seconds
+ * 3: minutes
+ * 4: hours
+ * 5: days
+ */
+void calc_time_interval(int type, int seconds, int diff, struct timeval *tv) {
+	int divide = 0;
+
+	switch(type) {
+		case 1:
+			divide = (1000*1000);
+			seconds *= 1;
+		break;
+		case 2:
+			divide = (1000*1000);
+			seconds *= 1000;
+		break;
+		case 3:
+			seconds *= 60;
+		break;
+		case 4:
+			seconds *= (60*60);
+		break;
+		case 5:
+			seconds *= (60*60*24);
+		break;
+	}
+	if(type > 2) {
+		divide = 1000;
+		seconds *= divide;
+	}
+
+	tv->tv_sec = (int)((float)seconds / (float)diff) / divide;
+	tv->tv_usec = (int)((float)seconds / (float)diff) % divide;
+
+	if(tv->tv_usec <= 0 && tv->tv_sec == 0) {
+		tv->tv_usec = 1;
+	}
+	if(tv->tv_usec >= 1000) {
+		tv->tv_sec += tv->tv_usec / 1000;
+		tv->tv_usec = tv->tv_usec % 1000;
+	}
+}
+
+/* Copyright (c) 2015-2016 Nuxi, https://nuxi.nl/ */
+char *_dirname(char *path) {
+	const char *in, *prev, *begin, *end;
+	char *out;
+	size_t prevlen;
+	bool skipslash;
+
+	/*
+	 * If path is a null pointer or points to an empty string,
+	 * dirname() shall return a pointer to the string ".".
+	 */
+	if(path == NULL || *path == '\0')
+		return ((char *)".");
+
+	/* Retain at least one leading slash character. */
+	in = out = *path == '/' ? path + 1 : path;
+
+	skipslash = true;
+	prev = ".";
+	prevlen = 1;
+	for(;;) {
+		/* Extract the next pathname component. */
+		while (*in == '/')
+			++in;
+		begin = in;
+		while(*in != '/' && *in != '\0')
+			++in;
+		end = in;
+		if(begin == end)
+			break;
+
+		/*
+		 * Copy over the previous pathname component, except if
+		 * it's dot. There is no point in retaining those.
+		 */
+		if(prevlen != 1 || *prev != '.') {
+			if(!skipslash)
+				*out++ = '/';
+			skipslash = false;
+			memmove(out, prev, prevlen);
+			out += prevlen;
+		}
+
+		/* Preserve the pathname component for the next iteration. */
+		prev = begin;
+		prevlen = end - begin;
+	}
+
+	/*
+	 * If path does not contain a '/', then dirname() shall return a
+	 * pointer to the string ".".
+	 */
+	if(out == path)
+		*out++ = '.';
+	*out = '\0';
+	return (path);
 }

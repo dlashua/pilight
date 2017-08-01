@@ -9,18 +9,8 @@
 #ifndef _ARP_H_
 #define _ARP_H_
 
-typedef struct arp_list_t {
-	char dstmac[19];
-	char dstip[INET_ADDRSTRLEN+1];
-	int tries;
-	int timeout;
-	int called;
-	unsigned long time;
-
-	struct arp_list_t *next;
-} arp_list_t;
-
-void arp_add_host(struct arp_list_t **, const char *);
-int arp_resolv(struct arp_list_t *, char *, char *, char *, int, void (*)(char *, char *));
+void arp_scan(void);
+void arp_stop(void);
+int arp_gc(void);
 
 #endif

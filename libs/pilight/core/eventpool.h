@@ -20,10 +20,13 @@
 	#define MSG_NOSIGNAL 0
 #else
 	#include <netinet/in.h>
+	#include <pthread.h>
 #endif
 #include <signal.h>
 #include <time.h>
-#include <pthread.h>
+#include <mbedtls/ssl.h>
+
+#include "../../libuv/uv.h"
 #include "eventpool_structs.h"
 
 enum eventpool_threads_t {
@@ -65,110 +68,127 @@ enum eventpool_threads_t {
 // #define EV_POLL											13
 
 #define REASON_SEND_CODE							0
-#define REASON_CODE_SENT							1
-#define REASON_CODE_RECEIVED					2
-#define REASON_RECEIVED_PULSETRAIN		3
-#define REASON_BROADCAST							4
-#define REASON_BROADCAST_CORE					5
-#define REASON_FORWARD								6
-#define REASON_CONFIG_UPDATE					7
-#define REASON_SOCKET_RECEIVED				8
-#define REASON_SOCKET_DISCONNECTED		9
-#define REASON_SOCKET_CONNECTED				10
-#define REASON_SOCKET_SEND						11
-#define REASON_SSDP_RECEIVED					12
-#define REASON_SSDP_RECEIVED_FREE			13
-#define REASON_SSDP_DISCONNECTED			14
-#define REASON_SSDP_CONNECTED					15
-#define REASON_WEBSERVER_CONNECTED		16
-#define REASON_DEVICE_ADDED						17
-#define REASON_ADHOC_MODE							18
-#define REASON_ADHOC_CONNECTED				19
-#define REASON_ADHOC_CONFIG_RECEIVED	20
-#define REASON_ADHOC_DATA_RECEIVED		21
-#define REASON_ADHOC_UPDATE_RECEIVED	22
-#define REASON_ADHOC_DISCONNECTED			23
-#define REASON_SEND_BEGIN							24
-#define REASON_SEND_END								25
-#define REASON_LOG										26
-#define REASON_END										27
+#define REASON_CONTROL_DEVICE					1
+#define REASON_CODE_SENT							2
+#define REASON_CODE_SEND_FAIL					3
+#define REASON_CODE_SEND_SUCCESS			4
+#define REASON_CODE_RECEIVED					5
+#define REASON_RECEIVED_PULSETRAIN		6
+#define REASON_BROADCAST							7
+#define REASON_BROADCAST_CORE					8
+#define REASON_FORWARD								9
+#define REASON_CONFIG_UPDATE					10
+#define REASON_CONFIG_UPDATED					11
+#define REASON_SOCKET_RECEIVED				12
+#define REASON_SOCKET_DISCONNECTED		13
+#define REASON_SOCKET_CONNECTED				14
+#define REASON_SOCKET_SEND						15
+#define REASON_SSDP_RECEIVED					16
+#define REASON_SSDP_RECEIVED_FREE			17
+#define REASON_SSDP_DISCONNECTED			18
+#define REASON_SSDP_CONNECTED					19
+#define REASON_WEBSERVER_CONNECTED		20
+#define REASON_DEVICE_ADDED						21
+#define REASON_DEVICE_ADAPT						22
+#define REASON_ADHOC_MODE							23
+#define REASON_ADHOC_CONNECTED				24
+#define REASON_ADHOC_CONFIG_RECEIVED	25
+#define REASON_ADHOC_DATA_RECEIVED		26
+#define REASON_ADHOC_UPDATE_RECEIVED	27
+#define REASON_ADHOC_DISCONNECTED			28
+#define REASON_SEND_BEGIN							29
+#define REASON_SEND_END								30
+#define REASON_ARP_FOUND_DEVICE				31
+#define REASON_ARP_LOST_DEVICE				32
+#define REASON_ARP_CHANGED_DEVICE			33
+#define REASON_LOG										34
+#define REASON_END										35
+
+typedef struct threadpool_data_t {
+	int reason;
+	int priority;
+	char name[255];
+	uv_sem_t *ref;
+	void *userdata;
+	void *(*func)(int, void *);
+	void *(*done)(void *);
+} threadpool_data_t;
+
+typedef struct threadpool_tasks_t {
+	unsigned long id;
+	char *name;
+	void *(*func)(int, void *);
+	void *(*done)(void *);
+	uv_sem_t *ref;
+	int priority;
+	int reason;
+
+	struct {
+		struct timespec first;
+		struct timespec second;
+	}	timestamp;
+
+	void *userdata;
+
+	struct threadpool_tasks_t *next;
+} threadpool_tasks_t;
 
 typedef struct eventpool_listener_t {
-	void *(*func)(void *);
+	void *(*func)(int, void *);
 	void *userdata;
 	int reason;
 	struct eventpool_listener_t *next;
 } eventpool_listener_t;
 
-// IO buffers interface
-typedef struct eventpool_iobuf_t {
+typedef struct iobuf_t {
   char *buf;
-  size_t len;
-  size_t size;
-	pthread_mutex_t lock;
+  ssize_t len;
+  ssize_t size;
+	uv_mutex_t lock;
 } iobuf_t;
 
-typedef struct eventpool_fd_t {
-	char *name;
-	int fd;
-	int idx;
-	int active;
-
-	int type;
-	int stage;
-	int error;
-	int remove;
+struct uv_custom_poll_t {
+	int is_ssl;
+	int is_server;
+	int is_udp;
+	int custom_recv;
 	int doread;
 	int dowrite;
-	int doflush;
-	int dohighpri;
-	void *userdata;
+	int doclose;
+	int started;
+	int action;
+	uv_timer_t *timer_req;
+	uv_poll_t *poll_req;
 
-	int timer;
-	int steps;
-	char *buffer;
-	size_t len;
+	void *data;
 
-	union {
-		struct {
-			char *server;
-			char ip[INET_ADDRSTRLEN+1];
-			unsigned int port;
-			unsigned short domain;
-			unsigned short type;
-			unsigned short protocol;
-			struct sockaddr_in addr;
-		} socket;
-	} data;
+	void (*write_cb)(uv_poll_t *);
+	void (*close_cb)(uv_poll_t *);
+	void (*read_cb)(uv_poll_t *, ssize_t *, char *);
 
-	int (*callback)(struct eventpool_fd_t *, int);
-	int (*send)(struct eventpool_fd_t *);
+	struct {
+		int init;
+		int handshake;
+		mbedtls_ssl_context ctx;
+	} ssl;
 
-  struct eventpool_iobuf_t recv_iobuf;
-  struct eventpool_iobuf_t send_iobuf;
-
-	struct eventpool_fd_t *next;
-} eventpool_fd_t;
-
-int eventpool_nrlisteners(int);
-void eventpool_callback(int, void *(*func)(void *));
+  struct iobuf_t recv_iobuf;
+  struct iobuf_t send_iobuf;
+} uv_custom_poll_t;
+ 
+void eventpool_callback(int, void *(*)(int, void *));
 void eventpool_trigger(int, void *(*)(void *), void *);
-
-int eventpool_fd_select(int, struct eventpool_fd_t **);
-void eventpool_fd_enable_write(struct eventpool_fd_t *);
-void eventpool_fd_enable_read(struct eventpool_fd_t *);
-void eventpool_fd_enable_highpri(struct eventpool_fd_t *);
-void eventpool_fd_disable_write(struct eventpool_fd_t *);
-void eventpool_fd_disable_read(struct eventpool_fd_t *);
-void eventpool_fd_disable_highpri(struct eventpool_fd_t *);
-void eventpool_socket_reconnect(struct eventpool_fd_t *);
-int eventpool_fd_write(int, char *, unsigned long);
-void eventpool_fd_remove(struct eventpool_fd_t *);
-struct eventpool_fd_t *eventpool_socket_add(char *, char *, unsigned int, int, int, int, int, int (*)(struct eventpool_fd_t *, int), int (*)(struct eventpool_fd_t *), void *);
-struct eventpool_fd_t *eventpool_fd_add(char *, int, int (*)(struct eventpool_fd_t *, int), int (*)(struct eventpool_fd_t *), void *);
-void *eventpool_process(void *);
 void eventpool_init(enum eventpool_threads_t);
-enum eventpool_threads_t eventpool_threaded(void);
 int eventpool_gc(void);
+
+void iobuf_remove(struct iobuf_t *, size_t);
+size_t iobuf_append(struct iobuf_t *, const void *, int);
+
+void uv_custom_poll_init(struct uv_custom_poll_t **, uv_poll_t *, void *);
+void uv_custom_poll_free(struct uv_custom_poll_t *);
+void uv_custom_poll_cb(uv_poll_t *, int, int);
+int uv_custom_read(uv_poll_t *);
+int uv_custom_write(uv_poll_t *);
+int uv_custom_close(uv_poll_t *);
 
 #endif

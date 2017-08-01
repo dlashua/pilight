@@ -8,22 +8,20 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <dirent.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <assert.h>
 #include <sys/stat.h>
 #ifndef _WIN32
+	#include <unistd.h>
 	#ifdef __mips__
 		#define __USE_UNIX98
 	#endif
 #endif
-#include <pthread.h>
 
-#include "../../core/threadpool.h"
 #include "../../core/eventpool.h"
 #include "../../core/pilight.h"
 #include "../../core/common.h"
@@ -36,11 +34,10 @@
 #include "ds18b20.h"
 
 typedef struct data_t {
-	char *name;
-
 	char *id;
 	char *sensor;
 	char *w1slave;
+	uv_timer_t *timer_req;
 
 	double temp_offset;
 	int interval;
@@ -52,18 +49,20 @@ static struct data_t *data = NULL;
 
 static char source_path[21];
 
+#ifndef _WIN32
 static void *reason_code_received_free(void *param) {
 	struct reason_code_received_t *data = param;
 	FREE(data);
 	return NULL;
 }
+#endif
 
 static void *thread(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct data_t *settings = task->userdata;
-	char *content = NULL;
-
 #ifndef _WIN32
+	uv_timer_t *timer_req = param;
+	struct data_t *settings = timer_req->data;
+
+	char *content = NULL;
 	struct stat st;
 
 	FILE *fp = NULL;
@@ -82,7 +81,7 @@ static void *thread(void *param) {
 	bytes = (size_t)st.st_size;
 
 	if((content = REALLOC(content, bytes+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	memset(content, '\0', bytes+1);
 
@@ -110,7 +109,7 @@ static void *thread(void *param) {
 	if(w1valid == 1) {
 		struct reason_code_received_t *data = MALLOC(sizeof(struct reason_code_received_t));
 		if(data == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		snprintf(data->message, 1024, "{\"id\":\"%s\",\"temperature\":%.3f}", settings->id, w1temp);
 		strncpy(data->origin, "receiver", 255);
@@ -123,24 +122,18 @@ static void *thread(void *param) {
 		data->repeat = 1;
 		eventpool_trigger(REASON_CODE_RECEIVED, reason_code_received_free, data);
 	}
-
-	struct timeval tv;
-	tv.tv_sec = settings->interval;
-	tv.tv_usec = 0;
-	threadpool_add_scheduled_work(settings->name, thread, tv, (void *)settings);
+	FREE(content);
 #endif
 
 	return (void *)NULL;
 }
 
-static void *addDevice(void *param) {
-	struct threadpool_tasks_t *task = param;
+static void *addDevice(int reason, void *param) {
 	struct JsonNode *jdevice = NULL;
 	struct JsonNode *jprotocols = NULL;
 	struct JsonNode *jid = NULL;
 	struct JsonNode *jchild = NULL;
 	struct data_t *node = NULL;
-	struct timeval tv;
 	char *stmp = NULL;
 	int match = 0, interval = 10;
 	double itmp = 0.0;
@@ -150,11 +143,11 @@ static void *addDevice(void *param) {
 	DIR *d = NULL;
 #endif
 
-	if(task->userdata == NULL) {
+	if(param == NULL) {
 		return NULL;
 	}
 
-	if((jdevice = json_first_child(task->userdata)) == NULL) {
+	if((jdevice = json_first_child(param)) == NULL) {
 		return NULL;
 	}
 
@@ -174,8 +167,9 @@ static void *addDevice(void *param) {
 	}
 
 	if((node = MALLOC(sizeof(struct data_t)))== NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
+	memset(node, 0, sizeof(struct data_t));
 	node->id = NULL;
 	node->sensor = NULL;
 	node->w1slave = NULL;
@@ -185,7 +179,7 @@ static void *addDevice(void *param) {
 		while(jchild) {
 			if(json_find_string(jchild, "id", &stmp) == 0) {
 				if((node->id = MALLOC(strlen(stmp)+1)) == NULL) {
-					OUT_OF_MEMORY
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				strcpy(node->id, stmp);
 			}
@@ -193,21 +187,28 @@ static void *addDevice(void *param) {
 		}
 	}
 
-	if(json_find_number(jdevice, "poll-interval", &itmp) == 0)
+	if(json_find_number(jdevice, "poll-interval", &itmp) == 0) {
 		interval = (int)round(itmp);
+	}
 
 #ifndef _WIN32
 	if((node->sensor = REALLOC(node->sensor, strlen(source_path)+strlen(node->id)+5)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	sprintf(node->sensor, "%s28-%s/", source_path, node->id);
 	if((d = opendir(node->sensor))) {
 		while((file = readdir(d)) != NULL) {
+	#ifndef __sun
 			if(file->d_type == DT_REG) {
+	#else
+			struct stat s;
+			stat(file->d_name, &s);
+			if(s.st_mode & S_IFDIR) {
+	#endif
 				if(strcmp(file->d_name, "w1_slave") == 0) {
 					size_t w1slavelen = strlen(node->sensor)+10;
 					if((node->w1slave = REALLOC(node->w1slave, w1slavelen+1)) == NULL) {
-						OUT_OF_MEMORY
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
 
 					memset(node->w1slave, '\0', w1slavelen);
@@ -227,12 +228,17 @@ static void *addDevice(void *param) {
 
 	node->interval = interval;
 
+	node->timer_req = NULL;
 	node->next = data;
 	data = node;
 
-	tv.tv_sec = interval;
-	tv.tv_usec = 0;
-	threadpool_add_scheduled_work(jdevice->key, thread, tv, (void *)node);
+	if((node->timer_req = MALLOC(sizeof(uv_timer_t))) == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+	node->timer_req->data = node;
+	uv_timer_init(uv_default_loop(), node->timer_req);
+	assert(node->interval > 0);
+	uv_timer_start(node->timer_req, (void (*)(uv_timer_t *))thread, node->interval*1000, node->interval*1000);
 
 	return NULL;
 }
@@ -241,7 +247,6 @@ static void gc(void) {
 	struct data_t *tmp = NULL;
 	while(data) {
 		tmp = data;
-		FREE(tmp->name);
 		if(tmp->id != NULL) {
 			FREE(tmp->id);
 		}
@@ -280,9 +285,13 @@ void ds18b20Init(void) {
 	options_add(&ds18b20->options, 0, "poll-interval", OPTION_HAS_VALUE, DEVICES_SETTING, JSON_NUMBER, (void *)10, "[0-9]");
 
 	memset(source_path, '\0', 21);
-	strcpy(source_path, "/sys/bus/w1/devices/");
 
-	// ds18b20->initDev=&initDev;
+	char *path = getenv("PILIGHT_DS18B20_PATH");
+	if(path == NULL) {
+		snprintf(source_path, 20, "/sys/bus/w1/devices/");
+	} else {
+		snprintf(source_path, 20, "%s", path);
+	}
 	ds18b20->gc=&gc;
 
 	eventpool_callback(REASON_DEVICE_ADDED, addDevice);
@@ -291,7 +300,7 @@ void ds18b20Init(void) {
 #if defined(MODULE) && !defined(_WIN32)
 void compatibility(struct module_t *module) {
 	module->name = "ds18b20";
-	module->version = "3.0";
+	module->version = "3.1";
 	module->reqversion = "7.0";
 	module->reqcommit = "94";
 }

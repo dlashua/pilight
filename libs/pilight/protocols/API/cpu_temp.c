@@ -8,22 +8,20 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <dirent.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <math.h>
+#include <assert.h>
 #ifndef _WIN32
+	#include <unistd.h>
 	#ifdef __mips__
 		#define __USE_UNIX98
 	#endif
 #endif
-#include <pthread.h>
 
-#include "../../core/threadpool.h"
 #include "../../core/pilight.h"
 #include "../../core/common.h"
 #include "../../core/dso.h"
@@ -34,13 +32,13 @@
 #include "../../core/gc.h"
 #include "cpu_temp.h"
 
-#ifndef _WIN32
-static char cpu_path[] = "/sys/class/thermal/thermal_zone0/temp";
+static char cpu_path[PATH_MAX] = "/sys/class/thermal/thermal_zone0/temp";
 
 typedef struct data_t {
 	char *name;
 	int id;
 	int interval;
+	uv_timer_t *timer_req;
 	double temp_offset;
 	struct data_t *next;
 } data_t;
@@ -54,8 +52,8 @@ static void *reason_code_received_free(void *param) {
 }
 
 static void *thread(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct data_t *settings = task->userdata;
+	uv_timer_t *timer_req = param;
+	struct data_t *settings = timer_req->data;
 	FILE *fp = NULL;
 	struct stat st;
 	char *content = NULL;
@@ -65,7 +63,7 @@ static void *thread(void *param) {
 		fstat(fileno(fp), &st);
 		bytes = (size_t)st.st_size;
 		if((content = REALLOC(content, bytes+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		memset(content, '\0', bytes+1);
 
@@ -80,7 +78,7 @@ static void *thread(void *param) {
 
 			struct reason_code_received_t *data = MALLOC(sizeof(struct reason_code_received_t));
 			if(data == NULL) {
-				OUT_OF_MEMORY
+				OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 			}
 			snprintf(data->message, 1024, "{\"id\":%d,\"temperature\":%.3f}", settings->id, (temp/1000));
 			strcpy(data->origin, "receiver");
@@ -92,10 +90,6 @@ static void *thread(void *param) {
 			}
 			data->repeat = 1;
 			eventpool_trigger(REASON_CODE_RECEIVED, reason_code_received_free, data);
-			struct timeval tv;
-			tv.tv_sec = settings->interval;
-			tv.tv_usec = 0;
-			threadpool_add_scheduled_work(settings->name, thread, tv, (void *)settings);
 		}
 	} else {
 		logprintf(LOG_NOTICE, "CPU sysfs \"%s\" does not exists", cpu_path);
@@ -104,22 +98,46 @@ static void *thread(void *param) {
 	return (void *)NULL;
 }
 
-static void *addDevice(void *param) {
-	struct threadpool_tasks_t *task = param;
+static void *adaptDevice(int reason, void *param) {
+	struct JsonNode *jdevice = NULL;
+	struct JsonNode *jpath = NULL;
+
+	if(param == NULL) {
+		return NULL;
+	}
+
+	if((jdevice = json_first_child(param)) == NULL) {
+		return NULL;
+	}
+
+	if(strcmp(jdevice->key, "cpu_temp") != 0) {
+		return NULL;
+	}
+
+	if((jpath = json_find_member(jdevice, "path")) != NULL) {
+		if(jpath->tag == JSON_STRING && strlen(jpath->string_) < PATH_MAX) {
+			strcpy(cpu_path, jpath->string_);
+		}
+	}
+
+	return NULL;
+}
+
+static void *addDevice(int reason, void *param) {
 	struct JsonNode *jdevice = NULL;
 	struct JsonNode *jprotocols = NULL;
 	struct JsonNode *jid = NULL;
 	struct JsonNode *jchild = NULL;
 	struct data_t *node = NULL;
-	struct timeval tv;
 	FILE *fp = NULL;
 	double itmp = 0;
 	int match = 0;
 
-	if(task->userdata == NULL) {
+	if(param == NULL) {
 		return NULL;
 	}
-	if((jdevice = json_first_child(task->userdata)) == NULL) {
+
+	if((jdevice = json_first_child(param)) == NULL) {
 		return NULL;
 	}
 
@@ -146,7 +164,7 @@ static void *addDevice(void *param) {
 	}
 
 	if((node = MALLOC(sizeof(struct data_t)))== NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	memset(node, '\0', sizeof(struct data_t));
 	node->interval = 10;
@@ -167,15 +185,20 @@ static void *addDevice(void *param) {
 	json_find_number(jdevice, "temperature-offset", &node->temp_offset);
 
 	if((node->name = MALLOC(strlen(jdevice->key)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->name, jdevice->key);
+	node->timer_req = NULL;
 	node->next = data;
 	data = node;
 
-	tv.tv_sec = 1;
-	tv.tv_usec = 0;
-	threadpool_add_scheduled_work(jdevice->key, thread, tv, (void *)node);
+	if((node->timer_req = MALLOC(sizeof(uv_timer_t))) == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+	node->timer_req->data = node;
+	uv_timer_init(uv_default_loop(), node->timer_req);
+	assert(node->interval > 0);
+	uv_timer_start(node->timer_req, (void (*)(uv_timer_t *))thread, node->interval*1000, node->interval*1000);
 
 	return NULL;
 }
@@ -192,7 +215,6 @@ static void gc(void) {
 		FREE(data);
 	}
 }
-#endif
 
 #if !defined(MODULE) && !defined(_WIN32)
 __attribute__((weak))
@@ -213,12 +235,11 @@ void cpuTempInit(void) {
 	options_add(&cpuTemp->options, 0, "show-temperature", OPTION_HAS_VALUE, GUI_SETTING, JSON_NUMBER, (void *)1, "^[10]{1}$");
 	options_add(&cpuTemp->options, 0, "poll-interval", OPTION_HAS_VALUE, DEVICES_SETTING, JSON_NUMBER, (void *)10, "[0-9]");
 
-#ifndef _WIN32
 	// cpuTemp->initDev=&initDev;
 	cpuTemp->gc=&gc;
 
 	eventpool_callback(REASON_DEVICE_ADDED, addDevice);
-#endif
+	eventpool_callback(REASON_DEVICE_ADAPT, adaptDevice);
 }
 
 #if defined(MODULE) && !defined(_WIN32)

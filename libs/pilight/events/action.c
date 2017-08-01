@@ -11,17 +11,16 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <sys/time.h>
-#include <libgen.h>
-#include <dirent.h>
 #ifndef _WIN32
 	#include <dlfcn.h>
+	#include <unistd.h>
+	#include <sys/time.h>
+	#include <libgen.h>
+	#include <dirent.h>
 #endif
 
-#include "../core/threadpool.h"
 #include "../core/pilight.h"
 #include "../core/common.h"
 #include "../core/options.h"
@@ -95,7 +94,7 @@ void event_action_init(void) {
 	if(settings_select_string(ORIGIN_MASTER, "actions-root", &action_root) != 0) {
 		/* If no action root was set, use the default action root */
 		if((action_root = MALLOC(strlen(ACTION_ROOT)+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(action_root, ACTION_ROOT);
 		action_root_free = 1;
@@ -170,10 +169,10 @@ void event_action_init(void) {
 void event_action_register(struct event_actions_t **act, const char *name) {
 
 	if((*act = MALLOC(sizeof(struct event_actions_t))) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	if(((*act)->name = MALLOC(strlen(name)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy((*act)->name, name);
 
@@ -200,8 +199,13 @@ int event_action_gc(void) {
 		event_actions = event_actions->next;
 		FREE(tmp_action);
 	}
-	if(event_actions != NULL) {
-		FREE(event_actions);
+
+	struct execution_t *tmp = NULL;
+	while(executions) {
+		tmp = executions;
+		FREE(tmp->name);
+		executions = executions->next;
+		FREE(tmp);
 	}
 
 	logprintf(LOG_DEBUG, "garbage collected event action library");
@@ -229,10 +233,10 @@ unsigned long event_action_set_execution_id(char *name) {
 	}
 	if(match == 0) {
 		if((tmp = MALLOC(sizeof(struct execution_t))) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		if((tmp->name = MALLOC(strlen(name)+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(tmp->name, name);
 		tmp->id = (unsigned int)tv.tv_sec + (unsigned int)tv.tv_usec;
@@ -254,73 +258,4 @@ int event_action_get_execution_id(char *name, unsigned long *ret) {
 		tmp = tmp->next;
 	}
 	return -1;
-}
-
-void event_action_thread_init(struct device_t *dev) {
-
-	if((dev->action_thread = MALLOC(sizeof(struct event_action_thread_t))) == NULL) {
-		OUT_OF_MEMORY
-	}
-
-	dev->action_thread->running = 0;
-	dev->action_thread->obj = NULL;
-	dev->action_thread->action = NULL;
-}
-
-void event_action_thread_start(struct device_t *dev, struct event_actions_t *action, void *(*func)(void *), struct rules_actions_t *obj) {
-	struct event_action_thread_t *thread = dev->action_thread;
-
-	if(thread->running == 1) {
-		logprintf(LOG_DEBUG, "overriding previous \"%s\" action for device \"%s\"", thread->action->name, dev->id);
-	}
-
-	event_action_set_execution_id(dev->id);
-
-	thread->obj = obj;
-	thread->device = dev;
-	thread->action = action;
-
-	threadpool_add_work(REASON_END, NULL, thread->action->name, 0, func, NULL, (void *)thread);
-}
-
-void event_action_thread_stop(struct device_t *dev) {
-
-	struct event_action_thread_t *thread = NULL;
-
-	if(dev != NULL) {
-		thread = dev->action_thread;
-		if(thread->running == 1) {
-			logprintf(LOG_DEBUG, "aborting running \"%s\" action for device \"%s\"", thread->action->name, dev->id);
-			thread->action->gc((void *)thread);
-			event_action_set_execution_id(dev->id);
-		}
-	}
-}
-
-void event_action_thread_free(struct device_t *dev) {
-
-	struct event_action_thread_t *thread = NULL;
-
-	if(dev != NULL) {
-		thread = dev->action_thread;
-		if(thread != NULL) {
-			if(thread->running == 1) {
-				event_action_set_execution_id(dev->id);
-				logprintf(LOG_DEBUG, "aborted running actions for device \"%s\"", dev->id);
-				thread->action->gc((void *)thread);
-			}
-
-			FREE(dev->action_thread);
-		}
-	}
-}
-
-void event_action_started(struct event_action_thread_t *thread) {
-	thread->running = 1;
-	logprintf(LOG_INFO, "started \"%s\" action for device \"%s\"", thread->action->name, thread->device->id);
-}
-
-void event_action_stopped(struct event_action_thread_t *thread) {
-	thread->running = 0;
-	logprintf(LOG_INFO, "stopped \"%s\" action for device \"%s\"", thread->action->name, thread->device->id);
 }

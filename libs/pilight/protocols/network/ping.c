@@ -8,22 +8,20 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <dirent.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <assert.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <math.h>
 #ifndef _WIN32
+	#include <unistd.h>
 	#ifdef __mips__
 		#define __USE_UNIX98
 	#endif
 #endif
-#include <pthread.h>
 
-#include "../../core/threadpool.h"
 #include "../../core/eventpool.h"
 #include "../../core/pilight.h"
 #include "../../core/ping.h"
@@ -42,6 +40,7 @@ typedef struct data_t {
 	int state;
 	int interval;
 	int polling;
+	uv_timer_t *timer_req;
 
 	struct data_t *next;
 } data_t;
@@ -74,7 +73,7 @@ static void callback(char *a, int b) {
 			settings->state = CONNECTED;
 			struct reason_code_received_t *data = MALLOC(sizeof(struct reason_code_received_t));
 			if(data == NULL) {
-				OUT_OF_MEMORY
+				OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 			}
 			snprintf(data->message, 1024, "{\"ip\":\"%s\",\"state\":\"connected\"}", a);
 			strncpy(data->origin, "receiver", 255);
@@ -92,7 +91,7 @@ static void callback(char *a, int b) {
 
 		struct reason_code_received_t *data = MALLOC(sizeof(struct reason_code_received_t));
 		if(data == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		snprintf(data->message, 1024, "{\"ip\":\"%s\",\"state\":\"disconnected\"}", a);
 		strncpy(data->origin, "receiver", 255);
@@ -108,14 +107,11 @@ static void callback(char *a, int b) {
 }
 
 static void *thread(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct data_t *settings = task->userdata;
-	struct ping_list_t *iplist = NULL;
-	struct timeval tv;
+	uv_timer_t *timer_req = param;
+	struct data_t *settings = timer_req->data;
 
-	tv.tv_sec = settings->interval;
-	tv.tv_usec = 0;
-	threadpool_add_scheduled_work(settings->name, thread, tv, (void *)settings);
+	struct ping_list_t *iplist = NULL;
+
 	if(settings->polling == 1) {
 		logprintf(LOG_DEBUG, "ping is still searching for network device %s", settings->ip);
 		return NULL;
@@ -124,25 +120,24 @@ static void *thread(void *param) {
 	settings->polling = 1;
 
 	logprintf(LOG_DEBUG, "ping is starting search for network device %s", settings->ip);
+
 	ping_add_host(&iplist, settings->ip);
 	ping(iplist, callback);
 
 	return (void *)NULL;
 }
 
-static void *addDevice(void *param) {
-	struct threadpool_tasks_t *task = param;
+static void *addDevice(int reason, void *param) {
 	struct JsonNode *jdevice = NULL;
 	struct JsonNode *jprotocols = NULL;
 	struct JsonNode *jid = NULL;
 	struct JsonNode *jchild = NULL;
 	struct data_t *node = NULL;
-	struct timeval tv;
 	char *tmp = NULL;
 	double itmp = 0;
 	int match = 0;
 
-	if(task->userdata == NULL) {
+	if(param == NULL) {
 		return NULL;
 	}
 
@@ -150,7 +145,7 @@ static void *addDevice(void *param) {
 		return NULL;
 	}
 
-	if((jdevice = json_first_child(task->userdata)) == NULL) {
+	if((jdevice = json_first_child(param)) == NULL) {
 		return NULL;
 	}
 
@@ -170,7 +165,7 @@ static void *addDevice(void *param) {
 	}
 
 	if((node = MALLOC(sizeof(struct data_t)))== NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	memset(node, '\0', sizeof(struct data_t));
 
@@ -181,7 +176,7 @@ static void *addDevice(void *param) {
 		while(jchild) {
 			if(json_find_string(jchild, "ip", &tmp) == 0) {
 				if((node->ip = MALLOC(strlen(tmp)+1)) == NULL) {
-					OUT_OF_MEMORY
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				strcpy(node->ip, tmp);
 				break;
@@ -203,17 +198,21 @@ static void *addDevice(void *param) {
 	}
 
 	if((node->name = MALLOC(strlen(jdevice->key)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->name, jdevice->key);
 
+	node->timer_req = NULL;
 	node->next = data;
 	data = node;
 
-	tv.tv_sec = 1;
-	tv.tv_usec = 0;
-
-	threadpool_add_scheduled_work(jdevice->key, thread, tv, (void *)node);
+	if((node->timer_req = MALLOC(sizeof(uv_timer_t))) == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+	node->timer_req->data = node;
+	uv_timer_init(uv_default_loop(), node->timer_req);
+	assert(node->interval > 0);
+	uv_timer_start(node->timer_req, (void (*)(uv_timer_t *))thread, node->interval*1000, node->interval*1000);
 
 	return NULL;
 }
@@ -223,12 +222,10 @@ static void gc(void) {
 	while(data) {
 		tmp = data;
 		FREE(tmp->name);
+		uv_timer_stop(tmp->timer_req);
 		FREE(tmp->ip);
 		data = data->next;
 		FREE(tmp);
-	}
-	if(data != NULL) {
-		FREE(data);
 	}
 }
 
@@ -263,7 +260,6 @@ void pingInit(void) {
 
 	options_add(&pping->options, 0, "poll-interval", OPTION_HAS_VALUE, DEVICES_SETTING, JSON_NUMBER, (void *)10, "[0-9]");
 
-	// pping->initDev=&initDev;
 	pping->gc=&gc;
 	pping->checkValues=&checkValues;
 
@@ -273,7 +269,7 @@ void pingInit(void) {
 #if defined(MODULE) && !defined(_WIN32)
 void compatibility(struct module_t *module) {
 	module->name = "ping";
-	module->version = "3.0";
+	module->version = "3.1";
 	module->reqversion = "7.0";
 	module->reqcommit = "94";
 }

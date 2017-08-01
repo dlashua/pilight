@@ -9,16 +9,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <mbedtls/sha256.h>
 
 #include "sha256cache.h"
 #include "common.h"
 #include "mem.h"
 #include "log.h"
 #include "gc.h"
-#include "../../mbedtls/mbedtls/sha256.h"
 
 int sha256cache_gc(void) {
 	struct sha256cache_t *tmp = sha256cache;
@@ -62,7 +61,7 @@ int sha256cache_rm(char *name) {
 	sha256cache_remove_node(&sha256cache, name);
 
 	logprintf(LOG_DEBUG, "removed %s from cache", name);
-	return 1;
+	return 0;
 }
 
 int sha256cache_add(char *name) {
@@ -80,16 +79,16 @@ int sha256cache_add(char *name) {
 	}
 
 	if((password = MALLOC(len)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strncpy(password, name, len);
 
 	struct sha256cache_t *node = MALLOC(sizeof(struct sha256cache_t));
 	if(node == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	if((node->name = MALLOC(strlen(name)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->name, name);
 

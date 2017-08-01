@@ -9,8 +9,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/time.h>
+
+#ifndef _WIN32
+	#include <unistd.h>
+	#include <sys/time.h>
+#endif
 
 #include "../../core/options.h"
 #include "../../core/log.h"
@@ -29,16 +32,39 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 		logprintf(LOG_ERR, "RANDOM requires a minimum and maximum value e.g. RANDOM(1, 10)");
 		return -1;
 	}
+
 	if(childs->tag == JSON_STRING) {
-		min = atoi(childs->string_);
+		if(isNumeric(childs->string_) == 0) {
+			min = atoi(childs->string_);
+		} else {
+			logprintf(LOG_ERR, "RANDOM requires both parameters to be numeric values e.g. RANDOM(1, 10)");
+			return -1;
+		}
+	} else if(childs->tag == JSON_NUMBER) {
+		min = childs->number_;
+	} else {
+		logprintf(LOG_ERR, "RANDOM requires both parameters to be numeric values e.g. RANDOM(1, 10)");
+		return -1;
 	}
+
 	childs = childs->next;
 	if(childs == NULL) {
 		logprintf(LOG_ERR, "RANDOM requires a minimum and maximum value e.g. RANDOM(1, 10)");
 		return -1;
 	}
+
 	if(childs->tag == JSON_STRING) {
-		max = atoi(childs->string_);
+		if(isNumeric(childs->string_) == 0) {
+			max = atoi(childs->string_);
+		} else {
+			logprintf(LOG_ERR, "RANDOM requires both parameters to be numeric values e.g. RANDOM(1, 10)");
+			return -1;
+		}
+	} else if(childs->tag == JSON_NUMBER) {
+		max = childs->number_;
+	} else {
+		logprintf(LOG_ERR, "RANDOM requires both parameters to be numeric values e.g. RANDOM(1, 10)");
+		return -1;
 	}
 
 	if(childs->next != NULL) {
@@ -68,7 +94,7 @@ void functionRandomInit(void) {
 #if defined(MODULE) && !defined(_WIN32)
 void compatibility(struct module_t *module) {
 	module->name = "random";
-	module->version = "2.0";
+	module->version = "2.1";
 	module->reqversion = "7.0";
 	module->reqcommit = "94";
 }

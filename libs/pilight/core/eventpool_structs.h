@@ -40,7 +40,6 @@ typedef struct reason_code_received_t {
 
 typedef struct reason_code_sent_t {
 	char message[1025];
-	char settings[1025];
 	char protocol[256];
 	char origin[256];
 	char uuid[UUID_LENGTH+1];
@@ -48,6 +47,16 @@ typedef struct reason_code_sent_t {
 	int type;
 	int repeat;
 } reason_code_sent_t;
+
+typedef struct reason_code_sent_fail_t {
+	char message[1025];
+	char uuid[UUID_LENGTH+1];
+} reason_code_sent_failed_t;
+
+typedef struct reason_code_sent_success_t {
+	char message[1025];
+	char uuid[UUID_LENGTH+1];
+} reason_code_sent_success_t;
 
 typedef struct reason_socket_disconnected_t {
 	int fd;
@@ -69,6 +78,7 @@ typedef struct reason_socket_received_t {
 	int fd;
 	char *buffer;
 	char type[256];
+	int endpoint;
 } reason_socket_received_t;
 
 typedef struct reason_socket_send_t {
@@ -85,7 +95,6 @@ typedef struct reason_send_code_t {
 	int pulses[MAXPULSESTREAMLENGTH+1];
 	char protocol[256];
 	int hwtype;
-	char settings[1025];
 	char uuid[UUID_LENGTH+1];
 } reason_send_code_t;
 
@@ -107,4 +116,18 @@ typedef struct reason_config_update_t {
 	} values[256];
 	char *uuid;
 } reason_config_update_t;
+
+#define reason_config_updated_t reason_config_update_t
+
+typedef struct reason_control_device_t {
+	char *dev;
+	char *state;
+	struct JsonNode *values;
+} reason_control_device_t;
+
+typedef struct reason_arp_device_t {
+	char mac[18];
+	char ip[INET_ADDRSTRLEN];
+} reason_arp_device_t;
+
 #endif

@@ -23,15 +23,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <errno.h>
+#include <wiringx.h>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "avrdude.h"
 #include "avr.h"
 #include "pindefs.h"
 #include "pgm.h"
 #include "avrbitbang.h"
-#include "../wiringx/wiringX.h"
 #include "../pilight/storage/storage.h"
 #include "../pilight/core/log.h"
 
@@ -154,7 +157,7 @@ void gpio_initpgm(PROGRAMMER *pgm)
 		logprintf(LOG_ERR, "no gpio-platform configured");
 		exit(EXIT_FAILURE);
 	}
-	if(wiringXSetup(platform, logprintf) < 0) {
+	if(wiringXSetup(platform, _logprintf) < 0) {
 		exit(EXIT_FAILURE);
 	}
 

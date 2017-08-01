@@ -65,7 +65,7 @@ static int validate(void) {
 	return -1;
 }
 
-static void parseCode(char *message) {
+static void parseCode(char **message) {
 	int x = 0, pRaw = 0, binary[MAX_RAW_LENGTH/2];
 	int iParity = 1, iParityData = -1;	// init for even parity
 	int iHeaderSync = 12;				// 1100
@@ -119,7 +119,7 @@ static void parseCode(char *message) {
 	humidity += humi_offset;
 
 	if(iParityData == 0 && (iHeaderSync == headerSync || dataSync == iDataSync)) {
-		snprintf(message, 255,
+		snprintf((*message), 255,
 			"{\"id\":%d,\"unit\":%d,\"temperature\":%.2f,\"humidity\":%.1f}",
 			id, unit, temperature/10, humidity
 		);
@@ -162,7 +162,7 @@ static int checkValues(struct JsonNode *jvalues) {
 
 		if(match == 0) {
 			if((snode = MALLOC(sizeof(struct settings_t))) == NULL) {
-				OUT_OF_MEMORY
+				OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 			}
 			snode->id = id;
 			snode->unit = unit;

@@ -9,10 +9,21 @@
 #ifndef _NTP_H_
 #define _NTP_H_
 
-void *ntpthread(void *);
-int ntpinterval(void *);
+#include "../../libuv/uv.h"
+
+typedef struct ntp_servers_t {
+	struct {
+		char host[255];
+		int port;
+	} server[10];
+	int nrservers;
+	void (*callback)(int, time_t);
+} ntp_servers_t;
+
+struct ntp_servers_t ntp_servers;
+
+void ntpsync(void);
 int getntpdiff(void);
-int ntp_gc(void);
 int isntpsynced(void);
 
 #endif

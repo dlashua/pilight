@@ -9,16 +9,22 @@
 #ifndef _SSL_H_
 #define _SSL_H_
 
-#include "../../mbedtls/mbedtls/error.h"
-#include "../../mbedtls/mbedtls/pk.h"
-#include "../../mbedtls/mbedtls/net.h"
-#include "../../mbedtls/mbedtls/x509_crt.h"
-#include "../../mbedtls/mbedtls/ctr_drbg.h"
-#include "../../mbedtls/mbedtls/entropy.h"
-#include "../../mbedtls/mbedtls/ssl.h"
-#include "../../mbedtls/mbedtls/debug.h"
-#include "../../mbedtls/mbedtls/cipher.h"
-#include "../../mbedtls/mbedtls/ssl_cache.h"
+#include <mbedtls/error.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/version.h>
+#if MBEDTLS_VERSION_MAJOR <= 2 && \
+    MBEDTLS_VERSION_MINOR <= 3
+	#include <mbedtls/net.h>
+#else
+	#include <mbedtls/net_sockets.h>
+#endif
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/debug.h>
+#include <mbedtls/cipher.h>
+#include <mbedtls/ssl_cache.h>
 
 mbedtls_entropy_context ssl_entropy;
 mbedtls_ctr_drbg_context ssl_ctr_drbg;

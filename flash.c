@@ -9,13 +9,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <errno.h>
 #include <time.h>
 #include <math.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "libs/pilight/core/pilight.h"
 #include "libs/pilight/core/gc.h"
@@ -23,14 +25,18 @@
 #include "libs/pilight/core/log.h"
 #include "libs/pilight/core/options.h"
 #include "libs/pilight/core/firmware.h"
+#include "libs/libuv/uv.h"
 
 #include "libs/pilight/events/events.h"
 
 #ifndef _WIN32
-	#include "libs/wiringx/wiringX.h"
+	#include <wiringx.h>
 #endif
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv) { 
+	const uv_thread_t pth_cur_id = uv_thread_self();
+	memcpy((void *)&pth_main_id, &pth_cur_id, sizeof(uv_thread_t));
+
 	atomicinit();
 	log_shell_enable();
 	log_file_disable();
@@ -46,12 +52,12 @@ int main(int argc, char **argv) {
 	memset(&comport, '\0', 255);
 
 	if((fconfig = MALLOC(strlen(CONFIG_FILE)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(fconfig, CONFIG_FILE);
 
 	if((progname = MALLOC(15)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(progname, "pilight-flash");
 
@@ -84,7 +90,7 @@ int main(int argc, char **argv) {
 			break;
 			case 'C':
 				if((fconfig = REALLOC(fconfig, strlen(args)+1)) == NULL) {
-					OUT_OF_MEMORY
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				strcpy(fconfig, args);
 			break;

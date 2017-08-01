@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <dirent.h>
 #include <sys/stat.h>
 
 #include "../../../lirc/config_file.h"
@@ -164,7 +163,7 @@ static int validateData(struct ir_remotes_t *remote, struct ir_keys_t *key, int 
 	return -1;
 }
 
-static void parseCode(char *message) {
+static void parseCode(char **message) {
 	struct ir_remotes_t *tmp_remotes = remotes;
 	struct ir_remote t;
 	struct ir_keys_t *tmp_keys = NULL;

@@ -11,16 +11,19 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <wiringx.h>
 
 #include "../core/pilight.h"
 #include "../core/common.h"
 #include "../core/dso.h"
 #include "../core/log.h"
 #include "../core/json.h"
-#include "../core/threadpool.h"
 #include "../hardware/hardware.h"
-#include "../../wiringx/wiringX.h"
 #include "IRgpio.h"
+
+#ifndef __useconds_t
+	#define __useconds_t unsigned long
+#endif
 
 static int gpio_ir_in = 0;
 static int gpio_ir_out = 0;
@@ -55,10 +58,10 @@ static int client_callback(struct eventpool_fd_t *node, int event) {
 	}
 	switch(event) {
 		case EV_CONNECT_SUCCESS: {
-			eventpool_fd_enable_highpri(node);
+			// eventpool_fd_enable_highpri(node);
 		} break;
 		case EV_HIGHPRI: {
-			eventpool_fd_enable_highpri(node);
+			// eventpool_fd_enable_highpri(node);
 			uint8_t c = 0;
 
 			(void)read(node->fd, &c, 1);
@@ -92,57 +95,57 @@ static int client_callback(struct eventpool_fd_t *node, int event) {
 				}
 			}
 
-			eventpool_fd_enable_highpri(node);
+			// eventpool_fd_enable_highpri(node);
 		} break;
 		case EV_DISCONNECTED: {
 			FREE(node->userdata);
-			eventpool_fd_remove(node);
+			// eventpool_fd_remove(node);
 		} break;
 	}
 	return 0;
 }
 #endif
 
-static unsigned short gpioIRHwInit(void *(*callback)(void *)) {
+static unsigned short int gpioIRHwInit(void) {
 #if defined(__arm__) || defined(__mips__)
-	char *platform = GPIO_PLATFORM;
-	if(settings_select_string(ORIGIN_MASTER, "gpio-platform", &platform) != 0 || strcmp(platform, "none") == 0) {
-		logprintf(LOG_ERR, "no gpio-platform configured");
-		return EXIT_FAILURE;
-	}
-	if(wiringXSetup(platform, logprintf) < 0) {
-		return EXIT_FAILURE;
-	}
-	if(gpio_ir_out >= 0) {
-		if(wiringXValidGPIO(gpio_ir_out) != 0) {
-			logprintf(LOG_ERR, "invalid sender pin: %d", gpio_ir_out);
-			return EXIT_FAILURE;
-		}
-		pinMode(gpio_ir_out, PINMODE_OUTPUT);
-	}
-	if(gpio_ir_in >= 0) {
-		if(wiringXValidGPIO(gpio_ir_in) != 0) {
-			logprintf(LOG_ERR, "invalid receiver pin: %d", gpio_ir_in);
-			return EXIT_FAILURE;
-		}
-		if(wiringXISR(gpio_ir_in, ISR_MODE_BOTH) < 0) {
-			logprintf(LOG_ERR, "unable to register interrupt for pin %d", gpio_ir_in);
-			return EXIT_SUCCESS;
-		}
-	}
-	if(gpio_ir_in > 0) {
-		int fd = wiringXSelectableFd(gpio_ir_in);
+	// char *platform = GPIO_PLATFORM;
+	// if(settings_select_string(ORIGIN_MASTER, "gpio-platform", &platform) != 0 || strcmp(platform, "none") == 0) {
+		// logprintf(LOG_ERR, "no gpio-platform configured");
+		// return EXIT_FAILURE;
+	// }
+	// if(wiringXSetup(platform, _logprintf) < 0) {
+		// return EXIT_FAILURE;
+	// }
+	// if(gpio_ir_out >= 0) {
+		// if(wiringXValidGPIO(gpio_ir_out) != 0) {
+			// logprintf(LOG_ERR, "invalid sender pin: %d", gpio_ir_out);
+			// return EXIT_FAILURE;
+		// }
+		// pinMode(gpio_ir_out, PINMODE_OUTPUT);
+	// }
+	// if(gpio_ir_in >= 0) {
+		// if(wiringXValidGPIO(gpio_ir_in) != 0) {
+			// logprintf(LOG_ERR, "invalid receiver pin: %d", gpio_ir_in);
+			// return EXIT_FAILURE;
+		// }
+		// if(wiringXISR(gpio_ir_in, ISR_MODE_BOTH) < 0) {
+			// logprintf(LOG_ERR, "unable to register interrupt for pin %d", gpio_ir_in);
+			// return EXIT_SUCCESS;
+		// }
+	// }
+	// if(gpio_ir_in > 0) {
+		// int fd = wiringXSelectableFd(gpio_ir_in);
 
-		struct data_t *data = MALLOC(sizeof(struct data_t));
-		if(data == NULL) {
-			OUT_OF_MEMORY;
-		}
-		memset(data->rbuffer, '\0', 1024);
-		data->rptr = 0;
-		data->callback = callback;
+		// struct data_t *data = MALLOC(sizeof(struct data_t));
+		// if(data == NULL) {
+			// OUT_OF_MEMORY;
+		// }
+		// memset(data->rbuffer, '\0', 1024);
+		// data->rptr = 0;
+		// data->callback = callback;
 
-		eventpool_fd_add("IRgpio", fd, client_callback, NULL, data);
-	}
+		// // eventpool_fd_add("IRgpio", fd, client_callback, NULL, data);
+	// }
 
 	return EXIT_SUCCESS;
 #else
@@ -175,12 +178,12 @@ static int gpioIRSend(int *code, int rawlen, int repeats) {
 	return EXIT_SUCCESS;
 }
 
-static void *receiveStop(void *param) {
+static void *receiveStop(int reason, void *param) {
 	doPause = 1;
 	return NULL;
 }
 
-static void *receiveStart(void *param) {
+static void *receiveStart(int reason, void *param) {
 	doPause = 0;
 	return NULL;
 }

@@ -11,13 +11,16 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
-#include <libgen.h>
-#include <dirent.h>
 #include <limits.h>
+
+#ifndef _WIN32
+	#include <libgen.h>
+	#include <dirent.h>
+	#include <unistd.h>
+#endif
 
 #include "../core/pilight.h"
 #include "../core/common.h"
@@ -76,7 +79,7 @@ void event_operator_init(void) {
 	if(settings_select_string(ORIGIN_MASTER, "operators-root", &operator_root) != 0) {
 		/* If no operator root was set, use the default operator root */
 		if((operator_root = MALLOC(strlen(OPERATOR_ROOT)+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(operator_root, OPERATOR_ROOT);
 		operator_root_free = 1;
@@ -150,15 +153,15 @@ void event_operator_init(void) {
 
 void event_operator_register(struct event_operators_t **op, const char *name) {
 	if((*op = MALLOC(sizeof(struct event_operators_t))) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	if(((*op)->name = MALLOC(strlen(name)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy((*op)->name, name);
 
-	(*op)->callback_string = NULL;
-	(*op)->callback_number = NULL;
+	(*op)->callback = NULL;
+	// (*op)->callback_number = NULL;
 
 	(*op)->next = event_operators;
 	event_operators = (*op);
@@ -171,9 +174,6 @@ int event_operator_gc(void) {
 		FREE(tmp_operator->name);
 		event_operators = event_operators->next;
 		FREE(tmp_operator);
-	}
-	if(event_operators != NULL) {
-		FREE(event_operators);
 	}
 
 	logprintf(LOG_DEBUG, "garbage collected event operator library");

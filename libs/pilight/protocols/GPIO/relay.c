@@ -10,8 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <math.h>
+
+#ifndef _WIN32
+	#include <unistd.h>
+#endif
 
 #include "../../core/pilight.h"
 #include "../../core/common.h"
@@ -21,19 +24,19 @@
 #include "../protocol.h"
 #include "relay.h"
 
-#include "../../../wiringx//wiringX.h"
+#include <wiringx.h>
 
 static char default_state[] = "off";
 
-static void createMessage(char *message, int gpio, int state) {
-	int x = snprintf(message, 255, "{\"gpio\":%d,", gpio);
+static void createMessage(char **message, int gpio, int state) {
+	int x = snprintf((*message), 255, "{\"gpio\":%d,", gpio);
 	if(state == 1)
-		x += snprintf(&message[x], 255-x, "\"state\":\"on\"}");
+		x += snprintf(&(*message)[x], 255-x, "\"state\":\"on\"}");
 	else
-		x += snprintf(&message[x], 255-x, "\"state\":\"off\"}");
+		x += snprintf(&(*message)[x], 255-x, "\"state\":\"off\"}");
 }
 
-static int createCode(struct JsonNode *code, char *message) {
+static int createCode(struct JsonNode *code, char **message) {
 	int free_def = 0;
 	int gpio = -1;
 	int state = -1;
@@ -44,7 +47,7 @@ static int createCode(struct JsonNode *code, char *message) {
 	relay->rawlen = 0;
 	if(json_find_string(code, "default-state", &def) != 0) {
 		if((def = MALLOC(4)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(def, "off");
 		free_def = 1;
@@ -59,18 +62,24 @@ static int createCode(struct JsonNode *code, char *message) {
 		state=1;
 	}
 
-	char *platform = NULL;
-	settings_select_string(ORIGIN_MASTER, "gpio-platform", &platform);
-	if(strcmp(platform, "none") == 0) {
+#if defined(__arm__) || defined(__mips__)
+	char *platform = GPIO_PLATFORM;
+	if(settings_select_string(ORIGIN_MASTER, "gpio-platform", &platform) != 0) {
 		logprintf(LOG_ERR, "relay: no gpio-platform configured");
 		have_error = 1;
 		goto clear;
-	} else if(gpio == -1 || state == -1) {
+	} else if(strcmp(platform, "none") == 0) {
+		logprintf(LOG_ERR, "relay: no gpio-platform configured");
+		have_error = 1;
+		goto clear;
+	} else
+#endif
+	if(gpio == -1 || state == -1) {
 		logprintf(LOG_ERR, "relay: insufficient number of arguments");
 		have_error = 1;
 		goto clear;
 #if defined(__arm__) || defined(__mips__)
-	} else if(wiringXSetup(platform, logprintf) < 0) {
+	} else if(wiringXSetup(platform, _logprintf) < 0) {
 		logprintf(LOG_ERR, "unable to setup wiringX") ;
 		return EXIT_FAILURE;
 	} else {
@@ -134,7 +143,7 @@ static int checkValues(struct JsonNode *code) {
 
 	if(json_find_string(code, "default-state", &def) != 0) {
 		if((def = MALLOC(4)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(def, "off");
 		free_def = 1;
@@ -156,7 +165,7 @@ static int checkValues(struct JsonNode *code) {
 				if(settings_select_string(ORIGIN_MASTER, "gpio-platform", &platform) != 0 || strcmp(platform, "none") == 0) {
 					logprintf(LOG_ERR, "relay: no gpio-platform configured");
 					return -1;
-				} else if(wiringXSetup(platform, logprintf) < 0) {
+				} else if(wiringXSetup(platform, _logprintf) < 0) {
 					logprintf(LOG_ERR, "unable to setup wiringX") ;
 					return -1;
 				} else if(wiringXValidGPIO(gpio) != 0) {

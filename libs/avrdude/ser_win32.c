@@ -29,6 +29,13 @@
 #include <stdio.h>
 #include <ctype.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+  #define snprintf _snprintf
+  #define vsnprintf _vsnprintf
+  #define strcasecmp _stricmp
+  #define strncasecmp _strnicmp
+#endif
+
 #include "../pilight/core/log.h"
 #include "../pilight/core/mem.h"
 #include "serial.h"
@@ -79,7 +86,7 @@ static int ser_open(char * port, union pinfo pinfo, union filedescriptor *fdp) {
 		newname = MALLOC(strlen("\\\\.\\") + strlen(port) + 1);
 
 		if(newname == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(newname, "\\\\.\\");
 		strcat(newname, port);

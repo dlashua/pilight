@@ -23,8 +23,8 @@
 #endif
 #include <sys/stat.h>
 #include <time.h>
-#include <libgen.h>
-#include <dirent.h>
+// #include <libgen.h>
+// #include <dirent.h>
 
 #include "../core/log.h"
 #include "json.h"
@@ -33,9 +33,8 @@ static struct JsonNode *jconfig = NULL;
 static char *configfile = NULL;
 static unsigned short has_config = 0;
 
-static void *_values_update(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct reason_config_update_t *data = task->userdata;
+static void *_values_update(int reason, void *param) {
+	struct reason_config_update_t *data = param;
 
 	struct JsonNode *jcdevices = json_find_member(jconfig, "devices");
 	struct JsonNode *jcdev_childs = json_first_child(jcdevices);
@@ -61,7 +60,7 @@ static void *_values_update(void *param) {
 								jvalue->string_ = NULL;
 							}
 							if((jvalue->string_ = REALLOC(jvalue->string_, strlen(data->values[x].string_)+1)) == NULL) {
-								OUT_OF_MEMORY
+								OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 							}
 							strcpy(jvalue->string_, data->values[x].string_);
 							jvalue->tag = JSON_STRING;
@@ -187,7 +186,7 @@ static int __read(char *file, int objects) {
 	char *content = NULL;
 
 	if((configfile = MALLOC(strlen(file)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(configfile, file);
 

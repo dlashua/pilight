@@ -33,8 +33,11 @@ typedef enum origin_t {
 	ORIGIN_HARDWARE,
 	ORIGIN_CONFIG,
 	ORIGIN_WEBSERVER,
-	ORIGIN_SSDP
+	ORIGIN_SSDP,
+	ORIGIN_ADHOC
 } origin_t;
+
+#include "../../libuv/uv.h"
 
 #include "defines.h"
 #include "eventpool.h"
@@ -43,14 +46,20 @@ typedef enum origin_t {
 
 #include "../storage/storage.h"
 
-#include "../../mbedtls/mbedtls/error.h"
-#include "../../mbedtls/mbedtls/pk.h"
-#include "../../mbedtls/mbedtls/net.h"
-#include "../../mbedtls/mbedtls/x509_crt.h"
-#include "../../mbedtls/mbedtls/ctr_drbg.h"
-#include "../../mbedtls/mbedtls/entropy.h"
-#include "../../mbedtls/mbedtls/ssl.h"
-#include "../../mbedtls/mbedtls/ssl_cache.h"
+#include <mbedtls/error.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/version.h>
+#if MBEDTLS_VERSION_MAJOR <= 2 && \
+    MBEDTLS_VERSION_MINOR <= 3
+	#include <mbedtls/net.h>
+#else
+	#include <mbedtls/net_sockets.h>
+#endif
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/ssl_cache.h>
 
 mbedtls_entropy_context ssl_entropy;
 mbedtls_ctr_drbg_context ssl_ctr_drbg;
@@ -75,7 +84,7 @@ struct pilight_t {
 } pilight_t;
 
 extern struct pilight_t pilight;
-
+extern const uv_thread_t pth_main_id;
 extern char pilight_uuid[UUID_LENGTH];
 
 #endif

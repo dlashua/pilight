@@ -11,22 +11,22 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <wiringx.h>
 
+#include "../../libuv/uv.h"
 #include "../core/pilight.h"
 #include "../core/common.h"
 #include "../core/dso.h"
 #include "../core/log.h"
 #include "../core/json.h"
-#include "../core/threadpool.h"
 #include "../core/eventpool.h"
 #include "../hardware/hardware.h"
-#include "../../wiringx/wiringX.h"
 #include "433gpio.h"
 
 static int gpio_433_in = 0;
 static int gpio_433_out = 0;
-static int doPause = 0;
 
+#if defined(__arm__) || defined(__mips__)
 typedef struct timestamp_t {
 	unsigned long first;
 	unsigned long second;
@@ -35,83 +35,119 @@ typedef struct timestamp_t {
 typedef struct data_t {
 	int rbuffer[1024];
 	int rptr;
-	void *(*callback)(void *);
 } data_t;
 
-struct timestamp_t timestamp;
+static struct data_t data;
+static struct timestamp_t timestamp;
 
-#if defined(__arm__) || defined(__mips__)
 static void *reason_received_pulsetrain_free(void *param) {
 	struct reason_received_pulsetrain_t *data = param;
 	FREE(data);
 	return NULL;
 }
 
-static int client_callback(struct eventpool_fd_t *node, int event) {
-	struct data_t *data = node->userdata;
+static void *reason_send_code_success_free(void *param) {
+	struct reason_send_code_success_free *data = param;
+	FREE(data);
+	return NULL;
+}
+
+static void poll_cb(uv_poll_t *req, int status, int events) {
 	int duration = 0;
+	int fd = req->io_watcher.fd;
 
-	if(doPause == 1) {
-		return 0;
-	}
-	switch(event) {
-		case EV_CONNECT_SUCCESS: {
-			eventpool_fd_enable_highpri(node);
-			timestamp.first = 0;
-			timestamp.second = 0;
-		} break;
-		case EV_HIGHPRI: {
-			eventpool_fd_enable_highpri(node);
-			uint8_t c = 0;
+	if(events & UV_PRIORITIZED) {
+		uint8_t c = 0;
 
-			(void)read(node->fd, &c, 1);
-			lseek(node->fd, 0, SEEK_SET);
+		(void)read(fd, &c, 1);
+		lseek(fd, 0, SEEK_SET);
 
-			struct timeval tv;
-			gettimeofday(&tv, NULL);
-			timestamp.first = timestamp.second;
-			timestamp.second = 1000000 * (unsigned int)tv.tv_sec + (unsigned int)tv.tv_usec;
+		struct timeval tv;
+		gettimeofday(&tv, NULL);
+		timestamp.first = timestamp.second;
+		timestamp.second = 1000000 * (unsigned int)tv.tv_sec + (unsigned int)tv.tv_usec;
 
-			duration = (int)((int)timestamp.second-(int)timestamp.first);
-			if(duration > 0) {
-				data->rbuffer[data->rptr++] = duration;
-				if(data->rptr > MAXPULSESTREAMLENGTH-1) {
-					data->rptr = 0;
-				}
-				if(duration > gpio433->mingaplen) {
-					/* Let's do a little filtering here as well */
-					if(data->rptr >= gpio433->minrawlen && data->rptr <= gpio433->maxrawlen) {
-						struct reason_received_pulsetrain_t *data1 = MALLOC(sizeof(struct reason_received_pulsetrain_t));
-						if(data1 == NULL) {
-							OUT_OF_MEMORY
-						}
-						data1->length = data->rptr;
-						memcpy(data1->pulses, data->rbuffer, data->rptr*sizeof(int));
-						data1->hardware = gpio433->id;
+		duration = (int)((int)timestamp.second-(int)timestamp.first);
 
-						eventpool_trigger(REASON_RECEIVED_PULSETRAIN, reason_received_pulsetrain_free, data1);
+		if(duration > 0) {
+			data.rbuffer[data.rptr++] = duration;
+			if(data.rptr > MAXPULSESTREAMLENGTH-1) {
+				data.rptr = 0;
+			}
+			if(duration > gpio433->mingaplen) {
+				/* Let's do a little filtering here as well */
+				if(data.rptr >= gpio433->minrawlen && data.rptr <= gpio433->maxrawlen) {
+					struct reason_received_pulsetrain_t *data1 = MALLOC(sizeof(struct reason_received_pulsetrain_t));
+					if(data1 == NULL) {
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
-					data->rptr = 0;
+					data1->length = data.rptr;
+					memcpy(data1->pulses, data.rbuffer, data.rptr*sizeof(int));
+					data1->hardware = gpio433->id;
+
+					eventpool_trigger(REASON_RECEIVED_PULSETRAIN, reason_received_pulsetrain_free, data1);
+				}
+				data.rptr = 0;
+			}
+		}
+	};
+	if(events & UV_DISCONNECT) {
+		FREE(req);
+	}
+	return;
+}
+
+static void *gpio433Send(int reason, void *param) {
+	struct reason_send_code_t *data1 = param;
+	int *code = data1->pulses;
+	int rawlen = data1->rawlen;
+	int repeats = data1->txrpt;
+
+	int r = 0, x = 0;
+	if(gpio_433_out >= 0) {
+		for(r=0;r<repeats;r++) {
+			for(x=0;x<rawlen;x+=2) {
+				digitalWrite(gpio_433_out, 1);
+				usleep((__useconds_t)code[x]);
+				digitalWrite(gpio_433_out, 0);
+				if(x+1 < rawlen) {
+					usleep((__useconds_t)code[x+1]);
 				}
 			}
-		} break;
-		case EV_DISCONNECTED: {
-			FREE(node->userdata);
-			eventpool_fd_remove(node);
-		} break;
+		}
+		digitalWrite(gpio_433_out, 0);
 	}
-	return 0;
+
+	struct reason_code_sent_success_t *data2 = MALLOC(sizeof(struct reason_code_sent_success_t));
+	strcpy(data2->message, data1->message);
+	strcpy(data2->uuid, data1->uuid);
+	eventpool_trigger(REASON_CODE_SEND_SUCCESS, reason_send_code_success_free, data2);
+	return NULL;
 }
 #endif
 
-static unsigned short gpio433HwInit(void *(*callback)(void *)) {
+static unsigned short int gpio433HwInit(void) {
 #if defined(__arm__) || defined(__mips__)
+
+	/* Make sure the pilight sender gets
+	   the highest priority available */
+#ifdef _WIN32
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#else
+	struct sched_param sched;
+	memset(&sched, 0, sizeof(sched));
+	sched.sched_priority = 80;
+	pthread_setschedparam(pthread_self(), SCHED_FIFO, &sched);
+#endif
+
+	uv_poll_t *poll_req = NULL;
 	char *platform = GPIO_PLATFORM;
+
 	if(settings_select_string(ORIGIN_MASTER, "gpio-platform", &platform) != 0 || strcmp(platform, "none") == 0) {
 		logprintf(LOG_ERR, "no gpio-platform configured");
 		return EXIT_FAILURE;
 	}
-	if(wiringXSetup(platform, logprintf) < 0) {
+	if(wiringXSetup(platform, _logprintf) < 0) {
 		return EXIT_FAILURE;
 	}
 	if(gpio_433_out >= 0) {
@@ -132,53 +168,25 @@ static unsigned short gpio433HwInit(void *(*callback)(void *)) {
 		}
 	}
 	if(gpio_433_in > 0) {
+		if((poll_req = MALLOC(sizeof(uv_poll_t))) == NULL) {
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+		}
 		int fd = wiringXSelectableFd(gpio_433_in);
 
-		struct data_t *data = MALLOC(sizeof(struct data_t));
-		if(data == NULL) {
-			OUT_OF_MEMORY;
-		}
-		memset(data->rbuffer, '\0', sizeof(data->rbuffer));
-		data->rptr = 0;
-		data->callback = callback;
+		memset(data.rbuffer, '\0', sizeof(data.rbuffer));
+		data.rptr = 0;
 
-		eventpool_fd_add("433gpio", fd, client_callback, NULL, data);
+		uv_poll_init(uv_default_loop(), poll_req, fd);
+		uv_poll_start(poll_req, UV_PRIORITIZED, poll_cb);
 	}
+
+	eventpool_callback(REASON_SEND_CODE, gpio433Send);
+
 	return EXIT_SUCCESS;
 #else
 	logprintf(LOG_ERR, "the 433gpio module is not supported on this hardware", gpio_433_in);
 	return EXIT_FAILURE;
 #endif
-}
-
-static int gpio433Send(int *code, int rawlen, int repeats) {
-	int r = 0, x = 0;
-	if(gpio_433_out >= 0) {
-		for(r=0;r<repeats;r++) {
-			for(x=0;x<rawlen;x+=2) {
-				digitalWrite(gpio_433_out, 1);
-				usleep((__useconds_t)code[x]);
-				digitalWrite(gpio_433_out, 0);
-				if(x+1 < rawlen) {
-					usleep((__useconds_t)code[x+1]);
-				}
-			}
-		}
-		digitalWrite(gpio_433_out, 0);
-	} else {
-		usleep(10);
-	}
-	return EXIT_SUCCESS;
-}
-
-static void *receiveStop(void *param) {
-	doPause = 1;
-	return NULL;
-}
-
-static void *receiveStart(void *param) {
-	doPause = 0;
-	return NULL;
 }
 
 static unsigned short gpio433Settings(JsonNode *json) {
@@ -217,13 +225,7 @@ void gpio433Init(void) {
 	gpio433->hwtype=RF433;
 	gpio433->comtype=COMOOK;
 	gpio433->init=&gpio433HwInit;
-	// gpio433->deinit=&gpio433HwDeinit;
-	gpio433->sendOOK=&gpio433Send;
-	// gpio433->receiveOOK=&gpio433Receive;
 	gpio433->settings=&gpio433Settings;
-
-	eventpool_callback(REASON_SEND_BEGIN, receiveStop);
-	eventpool_callback(REASON_SEND_END, receiveStart);
 }
 
 #if defined(MODULE) && !defined(_WIN32)

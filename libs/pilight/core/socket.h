@@ -12,20 +12,17 @@
 #include <time.h>
 #include "eventpool.h"
 
+#define SOCKET_SERVER	0
+#define SOCKET_CLIENT	1
+
 /* Start the socket server */
-int socket_start(unsigned short);
-int socket_connect(char *, unsigned short);
-int socket_connect1(char *, unsigned short, int (*callback)(struct eventpool_fd_t *, int));
-int socket_timeout_connect(int, struct sockaddr *, int);
+void socket_override(int);
+int socket_start(unsigned short, void (*)(int, char *, ssize_t, char **, ssize_t *));
+int socket_connect(char *, unsigned short, void (*)(int, char *, ssize_t, char **, ssize_t *));
 void socket_close(int);
 int socket_write(int, const char *, ...);
-int socket_send(int, char *);
-int socket_recv(int, char **, size_t *);
-int socket_read(int, char **, time_t);
-void *socket_wait(void *);
+ssize_t socket_recv(char *, int, char **, ssize_t *);
 int socket_gc(void);
 unsigned int socket_get_port(void);
-int socket_get_fd(void);
-int socket_get_clients(int);
 
 #endif

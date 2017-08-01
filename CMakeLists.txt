@@ -1,18 +1,35 @@
-cmake_minimum_required(VERSION 2.8.8)
+cmake_minimum_required(VERSION 3.0.2)
 
 include(CMakeConfig.txt)
 
 project(pilight)
+
 set(VERSION 7.0)
 
+set(PROJECT_ROOT_NAME ${PROJECT_NAME})
 set(MODULESPACK OFF)
 if(NOT CMAKE_BUILD_TYPE)
-	set(CMAKE_BUILD_TYPE Debug)
+	set(CMAKE_BUILD_TYPE DEBUG)
 endif()
 
 set(CMAKE_SKIP_RULE_DEPENDENCY TRUE)
 set(CPACK_DEB_COMPONENT_INSTALL TRUE)
 
+if(COVERALLS)
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O0") # debug, no optimisation
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --coverage") # enabling coverage
+endif()
+
+if(WIN32)
+	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+else()
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fomit-frame-pointer")
+endif()
+
+# if(CMAKE_BUILD_TYPE MATCHES DEBUG AND NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+	# #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fomit-frame-pointer -fsanitize=undefined  -fsanitize=address")
+# else()
+# endif()
 if(${ZWAVE} MATCHES "ON")
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option -Wno-psabi -Wunknown-pragmas")
 endif()
@@ -65,9 +82,9 @@ endif()
 
 set(CMAKE_SKIP_RPATH TRUE)
 if(NOT WIN32)
-	set(CMAKE_EXE_LINKER_FLAGS "  -Wl,-rpath=/usr/local/lib/,-rpath=/usr/lib/,-rpath=/lib/")
-	set(CMAKE_SHARED_LINKER_FLAGS " -Wl,-rpath=/usr/local/lib/,-rpath=/usr/lib/,-rpath=/lib/")
-	set(CMAKE_MODULE_LINKER_FLAGS " -Wl,-rpath=/usr/local/lib/,-rpath=/usr/lib/,-rpath=/lib/")
+	set(CMAKE_EXE_LINKER_FLAGS "  -Wl,-rpath=.,-rpath=/usr/local/lib/,-rpath=/usr/lib/,-rpath=/lib/")
+	set(CMAKE_SHARED_LINKER_FLAGS " -Wl,-rpath=.,-rpath=/usr/local/lib/,-rpath=/usr/lib/,-rpath=/lib/")
+	set(CMAKE_MODULE_LINKER_FLAGS " -Wl,-rpath=.,-rpath=/usr/local/lib/,-rpath=/usr/lib/,-rpath=/lib/")
 endif()
 
 if(NOT WIN32)
@@ -161,7 +178,7 @@ if(NOT WIN32)
 	
 	set(CMAKE_UNWIND_LIBS_INIT)
 
-	if(NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+	if(NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
 		find_library(CMAKE_UNWIND_LIBS_INIT
 		NAME unwind
 		PATHS
@@ -184,29 +201,129 @@ if(NOT WIN32)
 			message(STATUS "Looking for libunwind - found (${CMAKE_UNWIND_LIBS_INIT})")
 		endif()
 	endif()
-	
+
+	find_library(CMAKE_WIRINGX_LIBS_INIT
+		NAME wiringx
+		PATHS
+			${CROSS_COMPILE_LIBS}
+			/usr/lib
+			/usr/lib32
+			/usr/lib64
+			/usr/lib/i386-linux-gnu
+			/usr/lib/x86_64-linux-gnu
+			/usr/local/lib
+			/usr/local/lib32
+			/usr/local/lib64
+			/usr/lib/arm-linux-gnueabi
+			/usr/lib/arm-linux-gnueabihf
+			/usr/lib/aarch64-linux-gnu
+		NO_DEFAULT_PATH)
+
+	if(${CMAKE_WIRINGX_LIBS_INIT} MATCHES "CMAKE_WIRINGX_LIBS_INIT-NOTFOUND")
+		message(FATAL_ERROR "Looking for libwiringx - not found")
+	else()
+		message(STATUS "Looking for libwiringx - found (${CMAKE_WIRINGX_LIBS_INIT})")
+	endif()
+
+	find_library(CMAKE_MBEDTLS_LIBS_INIT
+		NAME mbedtls
+		PATHS
+			${CROSS_COMPILE_LIBS}
+			/usr/lib
+			/usr/lib32
+			/usr/lib64
+			/usr/lib/i386-linux-gnu
+			/usr/lib/x86_64-linux-gnu
+			/usr/local/lib
+			/usr/local/lib32
+			/usr/local/lib64
+			/usr/lib/arm-linux-gnueabi
+			/usr/lib/arm-linux-gnueabihf
+			/usr/lib/aarch64-linux-gnu
+		NO_DEFAULT_PATH)
+
+	if(${CMAKE_MBEDTLS_LIBS_INIT} MATCHES "CMAKE_MBEDTLS_LIBS_INIT-NOTFOUND")
+		message(FATAL_ERROR "Looking for libmbedtls - not found")
+	else()
+		message(STATUS "Looking for libmbedtls - found (${CMAKE_MBEDTLS_LIBS_INIT})")
+	endif()
+
+	find_library(CMAKE_MBEDCRYPTO_LIBS_INIT
+		NAME mbedcrypto
+		PATHS
+			${CROSS_COMPILE_LIBS}
+			/usr/lib
+			/usr/lib32
+			/usr/lib64
+			/usr/lib/i386-linux-gnu
+			/usr/lib/x86_64-linux-gnu
+			/usr/local/lib
+			/usr/local/lib32
+			/usr/local/lib64
+			/usr/lib/arm-linux-gnueabi
+			/usr/lib/arm-linux-gnueabihf
+			/usr/lib/aarch64-linux-gnu
+		NO_DEFAULT_PATH)
+
+	if(${CMAKE_MBEDCRYPTO_LIBS_INIT} MATCHES "CMAKE_MBEDCRYPTO_LIBS_INIT-NOTFOUND")
+		message(FATAL_ERROR "Looking for libmbedcrypto - not found")
+	else()
+		message(STATUS "Looking for libmbedcrypto - found (${CMAKE_MBEDCRYPTO_LIBS_INIT})")
+	endif()
+
+	find_library(CMAKE_MBEDX509_LIBS_INIT
+		NAME mbedx509
+		PATHS
+			${CROSS_COMPILE_LIBS}
+			/usr/lib
+			/usr/lib32
+			/usr/lib64
+			/usr/lib/i386-linux-gnu
+			/usr/lib/x86_64-linux-gnu
+			/usr/local/lib
+			/usr/local/lib32
+			/usr/local/lib64
+			/usr/lib/arm-linux-gnueabi
+			/usr/lib/arm-linux-gnueabihf
+			/usr/lib/aarch64-linux-gnu
+		NO_DEFAULT_PATH)
+
+	if(${CMAKE_MBEDX509_LIBS_INIT} MATCHES "CMAKE_MBEDX509_LIBS_INIT-NOTFOUND")
+		message(FATAL_ERROR "Looking for libmbedx509 - not found")
+	else()
+		message(STATUS "Looking for libmbedx509 - found (${CMAKE_MBEDX509_LIBS_INIT})")
+	endif()
 endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/inc)
+include_directories(${PROJECT_SOURCE_DIR}/libs/libuv)
 include_directories(/usr/local/include/)
 
 add_subdirectory(inc)
 add_subdirectory(libs)
+add_subdirectory(tests)
 
 if(WIN32)
 	set(THREADS_USE_PTHREADS_WIN32 true)
 endif()
-find_package(Threads REQUIRED)
+#if(NOT CMAKE_BUILD_TYPE MATCHES DEBUG OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+	set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+	find_package(Threads REQUIRED)
+#endif()
 if(NOT WIN32)
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")	
 		find_package(Backtrace REQUIRED)
 	endif()
 endif()
 
+# if(CMAKE_USE_PTHREADS_INIT)
+	# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ")
+# endif()
+
 if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 	if(WIN32)
-		add_custom_command(OUTPUT ${PROJECT_SOURCE_DIR}/res/win32/admin.obj COMMAND ${CMAKE_RC_COMPILER} -o ${PROJECT_SOURCE_DIR}/res/win32/admin.obj ${PROJECT_SOURCE_DIR}/res/win32/admin.rc)
-		add_custom_command(OUTPUT ${PROJECT_SOURCE_DIR}/res/win32/icon.obj COMMAND ${CMAKE_RC_COMPILER} -o ${PROJECT_SOURCE_DIR}/res/win32/icon.obj ${PROJECT_SOURCE_DIR}/res/win32/icon.rc)
+		add_custom_command(OUTPUT ${PROJECT_SOURCE_DIR}/res/win32/admin.obj COMMAND ${CMAKE_RC_COMPILER} /Fo ${PROJECT_SOURCE_DIR}/res/win32/admin.obj ${PROJECT_SOURCE_DIR}/res/win32/admin.rc)
+		add_custom_command(OUTPUT ${PROJECT_SOURCE_DIR}/res/win32/icon.obj COMMAND ${CMAKE_RC_COMPILER} /Fo ${PROJECT_SOURCE_DIR}/res/win32/icon.obj ${PROJECT_SOURCE_DIR}/res/win32/icon.rc)
 		add_library(admin STATIC ${PROJECT_SOURCE_DIR}/res/win32/admin.obj)	
 		add_library(icon STATIC ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)	
 		set_source_files_properties(${PROJECT_SOURCE_DIR}/res/win32/admin.obj PROPERTIES EXTERNAL_OBJECT true GENERATED true)
@@ -217,44 +334,82 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 
 	add_library(${PROJECT_NAME} OBJECT ${libs_files})
 	set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE TRUE)
+	set_property(TARGET ${PROJECT_NAME} PROPERTY C_STANDARD 99)
+	add_library(DSO OBJECT ${PROJECT_SOURCE_DIR}/tests/libdso.c)
+	set_property(TARGET DSO PROPERTY POSITION_INDEPENDENT_CODE TRUE)
+	set_property(TARGET DSO PROPERTY C_STANDARD 99)
 
-	add_library(${PROJECT_NAME}_shared STATIC $<TARGET_OBJECTS:${PROJECT_NAME}>)
-	add_library(${PROJECT_NAME}_static SHARED $<TARGET_OBJECTS:${PROJECT_NAME}>)
+	add_library(${PROJECT_NAME}_static STATIC $<TARGET_OBJECTS:${PROJECT_NAME}>)
+	add_library(${PROJECT_NAME}_shared SHARED $<TARGET_OBJECTS:${PROJECT_NAME}>)
+	add_library(dso_shared SHARED $<TARGET_OBJECTS:DSO>)
 
-	target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_THREAD_LIBS_INIT})
+	set_property(TARGET ${PROJECT_NAME}_static PROPERTY C_STANDARD 99)
+	set_property(TARGET ${PROJECT_NAME}_shared PROPERTY C_STANDARD 99)
+	set_property(TARGET dso_shared PROPERTY C_STANDARD 99)
+
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}_shared pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_THREAD_LIBS_INIT})
+	endif()
+	if(${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
+		target_link_libraries(${PROJECT_NAME}_shared kstat sendfile socket nsl)
+	endif()
 	if(WIN32)
 		target_link_libraries(${PROJECT_NAME}_shared ws2_32)
 		target_link_libraries(${PROJECT_NAME}_shared wsock32)
 		target_link_libraries(${PROJECT_NAME}_shared iphlpapi)
 		target_link_libraries(${PROJECT_NAME}_shared psapi)
+		target_link_libraries(${PROJECT_NAME}_shared userenv)
 		target_link_libraries(${PROJECT_NAME}_static ws2_32)
 		target_link_libraries(${PROJECT_NAME}_static wsock32)
 		target_link_libraries(${PROJECT_NAME}_static iphlpapi)
 		target_link_libraries(${PROJECT_NAME}_static psapi)
+		target_link_libraries(${PROJECT_NAME}_static userenv)
 		if(${PROTOCOL_ARPING} MATCHES "ON")
 			target_link_libraries(${PROJECT_NAME}_shared ${PROJECT_SOURCE_DIR}/res/win32/libwpcap.dll.a)
 			target_link_libraries(${PROJECT_NAME}_static ${PROJECT_SOURCE_DIR}/res/win32/libwpcap.dll.a)
 		endif()
 	endif()
 
-	target_link_libraries(${PROJECT_NAME}_shared m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}_shared m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}_shared ${Backtrace_LIBRARIES})
+		target_link_libraries(${PROJECT_NAME}_shared kvm)
+		target_link_libraries(${PROJECT_NAME}_shared thr)
 	endif()
 	if(NOT WIN32)
 		target_link_libraries(${PROJECT_NAME}_shared rt)
 	endif()
 	target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_DL_LIBS})
+	target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_WIRINGX_LIBS_INIT})
+	target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_MBEDTLS_LIBS_INIT})
+	target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_MBEDCRYPTO_LIBS_INIT})
+	target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_MBEDX509_LIBS_INIT})
 
-	target_link_libraries(${PROJECT_NAME}_static ${CMAKE_THREAD_LIBS_INIT})
-	target_link_libraries(${PROJECT_NAME}_static m)
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}_static pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}_static ${CMAKE_THREAD_LIBS_INIT})
+	endif()
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}_static m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}_static ${Backtrace_LIBRARIES})
+		target_link_libraries(${PROJECT_NAME}_static kvm)
+		target_link_libraries(${PROJECT_NAME}_static thr)
 	endif()
 	if(NOT WIN32)
 		target_link_libraries(${PROJECT_NAME}_static rt)
 	endif()
 	target_link_libraries(${PROJECT_NAME}_static ${CMAKE_DL_LIBS})
+	target_link_libraries(${PROJECT_NAME}_static ${CMAKE_WIRINGX_LIBS_INIT})
+	target_link_libraries(${PROJECT_NAME}_static ${CMAKE_MBEDTLS_LIBS_INIT})
+	target_link_libraries(${PROJECT_NAME}_static ${CMAKE_MBEDCRYPTO_LIBS_INIT})
+	target_link_libraries(${PROJECT_NAME}_static ${CMAKE_MBEDX509_LIBS_INIT})
 
 	if(${WEBSERVER_HTTPS} MATCHES "ON")
 		target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_SSL_LIBS_INIT})
@@ -273,9 +428,16 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 	if(NOT WIN32)
 		target_link_libraries(${PROJECT_NAME}_shared ${CMAKE_UNWIND_LIBS_INIT})
 		target_link_libraries(${PROJECT_NAME}_static ${CMAKE_UNWIND_LIBS_INIT})
+		if(CMAKE_BUILD_TYPE MATCHES DEBUG AND NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+			# target_link_libraries(${PROJECT_NAME}_shared asan)
+			# target_link_libraries(${PROJECT_NAME}_shared ubsan)
+			# target_link_libraries(${PROJECT_NAME}_static asan)
+			# target_link_libraries(${PROJECT_NAME}_static ubsan)
+		endif()
 	endif()
 
 	set_target_properties(${PROJECT_NAME}_shared ${PROJECT_NAME}_static PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
+	set_target_properties(dso_shared PROPERTIES OUTPUT_NAME dso)
 
 	if(NOT WIN32)
 		install(CODE "execute_process(COMMAND rm /usr/local/lib/lib${PROJECT_NAME}.so)")
@@ -321,39 +483,58 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 	endif()	
 
 	if(WIN32)
+		add_executable(${PROJECT_ROOT_NAME}-unittest tests/alltests.c ${tests_files} ${PROJECT_SOURCE_DIR}/res/win32/icon.obj )
+	else()
+		add_executable(${PROJECT_ROOT_NAME}-unittest tests/alltests.c ${tests_files})
+	endif()
+
+	target_link_libraries(${PROJECT_ROOT_NAME}-unittest ${PROJECT_ROOT_NAME}_shared)
+	if(${ZWAVE} MATCHES "ON")
+		target_link_libraries(${PROJECT_ROOT_NAME}-unittest stdc++)
+	endif()
+	target_link_libraries(${PROJECT_ROOT_NAME}-unittest ${CMAKE_DL_LIBS})
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_ROOT_NAME}-unittest m)
+	endif()
+	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+		target_link_libraries(${PROJECT_ROOT_NAME}-unittest ${Backtrace_LIBRARIES})
+	endif()
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_ROOT_NAME}-unittest pthread)
+	else()
+		target_link_libraries(${PROJECT_ROOT_NAME}-unittest ${CMAKE_THREAD_LIBS_INIT})
+	endif()
+	set_target_properties(${PROJECT_ROOT_NAME}-unittest PROPERTIES INSTALL_RPATH "${CMAKE_BINARY_DIR}/")
+	set_target_properties(${PROJECT_ROOT_NAME}-unittest PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
+	set_target_properties(${PROJECT_ROOT_NAME}-unittest PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)	
+	
+	if(WIN32)
 		add_executable(${PROJECT_NAME}-daemon daemon.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
 		target_link_libraries(${PROJECT_NAME}-daemon "-Wl,--subsystem,windows")
 	else()
 		add_executable(${PROJECT_NAME}-daemon daemon.c)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-daemon ${PROJECT_NAME}_shared)
+	#
+	# libefence
+	#
+	# target_link_libraries(${PROJECT_NAME}-daemon ${CMAKE_SOURCE_DIR}/build/libefence.a)
 	if(${ZWAVE} MATCHES "ON")
 		target_link_libraries(${PROJECT_NAME}-daemon stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-daemon ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-daemon m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-daemon m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-daemon ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-daemon ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-daemon pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-daemon ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 	
-	# if(WIN32)
-		# add_executable(${PROJECT_NAME}-unittest unittest.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
-		# target_link_libraries(${PROJECT_NAME}-unittest "-Wl,--subsystem,windows")
-	# else()
-		# add_executable(${PROJECT_NAME}-unittest unittest.c)
-	# endif()
-	# target_link_libraries(${PROJECT_NAME}-unittest ${PROJECT_NAME}_shared)
-	# if(${ZWAVE} MATCHES "ON")
-		# target_link_libraries(${PROJECT_NAME}-unittest stdc++)
-	# endif()
-	# target_link_libraries(${PROJECT_NAME}-unittest ${CMAKE_DL_LIBS})
-	# target_link_libraries(${PROJECT_NAME}-unittest m)
-	# if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
-		# target_link_libraries(${PROJECT_NAME}-unittest ${Backtrace_LIBRARIES})
-	# endif()
-	# target_link_libraries(${PROJECT_NAME}-unittest ${CMAKE_THREAD_LIBS_INIT})	
-
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-raw raw.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
 	else()
@@ -364,11 +545,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 		target_link_libraries(${PROJECT_NAME}-raw stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-raw ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-raw m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-raw m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-raw ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-raw ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-raw pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-raw ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-send send.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -380,11 +567,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 	if(${ZWAVE} MATCHES "ON")
 		target_link_libraries(${PROJECT_NAME}-send stdc++)
 	endif()
-	target_link_libraries(${PROJECT_NAME}-send m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-send m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-send ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-send ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-send pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-send ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-control control.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -396,11 +589,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 	if(${ZWAVE} MATCHES "ON")
 		target_link_libraries(${PROJECT_NAME}-control stdc++)
 	endif()
-	target_link_libraries(${PROJECT_NAME}-control m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-control m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-control ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-control ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-control pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-control ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-receive receive.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -412,11 +611,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 		target_link_libraries(${PROJECT_NAME}-receive stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-receive ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-receive m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-receive m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-receive ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-receive ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-receive pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-receive ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-debug debug.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -428,11 +633,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 		target_link_libraries(${PROJECT_NAME}-debug stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-debug ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-debug m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-debug m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-debug ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-debug ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-debug pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-debug ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-uuid uuid.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -444,11 +655,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 		target_link_libraries(${PROJECT_NAME}-uuid stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-uuid ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-uuid m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-uuid m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-uuid ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-uuid ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-uuid pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-uuid ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-sha256 sha256.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -460,11 +677,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 		target_link_libraries(${PROJECT_NAME}-sha256 stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-sha256 ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-sha256 m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-sha256 m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-sha256 ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-sha256 ${CMAKE_THREAD_LIBS_INIT})	
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")
+		target_link_libraries(${PROJECT_NAME}-sha256 pthread)	
+	else()
+		target_link_libraries(${PROJECT_NAME}-sha256 ${CMAKE_THREAD_LIBS_INIT})	
+	endif()
 
 	if(WIN32)
 		add_executable(${PROJECT_NAME}-flash flash.c ${PROJECT_SOURCE_DIR}/res/win32/icon.obj)
@@ -476,11 +699,17 @@ if(${MODULESPACK} MATCHES "OFF" OR WIN32)
 		target_link_libraries(${PROJECT_NAME}-flash stdc++)
 	endif()
 	target_link_libraries(${PROJECT_NAME}-flash ${CMAKE_DL_LIBS})
-	target_link_libraries(${PROJECT_NAME}-flash m)
+	if(NOT WIN32)
+		target_link_libraries(${PROJECT_NAME}-flash m)
+	endif()
 	if(${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
 		target_link_libraries(${PROJECT_NAME}-flash ${Backtrace_LIBRARIES})
 	endif()
-	target_link_libraries(${PROJECT_NAME}-flash ${CMAKE_THREAD_LIBS_INIT})
+	if(CMAKE_BUILD_TYPE MATCHES DEBUG AND ${CMAKE_SYSTEM_PROCESSOR} MATCHES "^mips")	
+		target_link_libraries(${PROJECT_NAME}-flash pthread)
+	else()
+		target_link_libraries(${PROJECT_NAME}-flash ${CMAKE_THREAD_LIBS_INIT})
+	endif()
 
 	if(WIN32)
 		install(FILES "${PROJECT_SOURCE_DIR}/res/firmware/${PROJECT_NAME}_usb_nano.hex" DESTINATION . COMPONENT ${PROJECT_NAME})

@@ -8,22 +8,20 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <dirent.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <assert.h>
 #include <sys/stat.h>
 #ifndef _WIN32
+	#include <unistd.h>
 	#ifdef __mips__
 		#define __USE_UNIX98
 	#endif
 #endif
-#include <pthread.h>
 
-#include "../../core/threadpool.h"
 #include "../../core/eventpool.h"
 #include "../../core/pilight.h"
 #include "../../core/common.h"
@@ -38,12 +36,21 @@
 #include "wunderground.h"
 
 #define INTERVAL	900
+static int min_interval = INTERVAL;
+static int time_override = -1;
+static char url[2][1024] = {
+	"http://api.wunderground.com/api/%s/geolookup/conditions/q/%s/%s.json",
+	"http://api.wunderground.com/api/%s/astronomy/q/%s/%s.json"
+};
 
 typedef struct data_t {
 	char *country;
 	char *location;
 	char *key;
 	char *api;
+	char tz[128];
+	uv_timer_t *enable_timer_req;
+	uv_timer_t *update_timer_req;
 
 	double temp;
 	int humi;
@@ -61,7 +68,8 @@ typedef struct data_t {
 
 static struct data_t *data = NULL;
 
-static void *thread(void *param);
+static void *update(void *param);
+static void *enable(void *param);
 
 static void *reason_code_received_free(void *param) {
 	struct reason_code_received_t *data = param;
@@ -78,7 +86,6 @@ static void callback2(int code, char *data, int size, char *type, void *userdata
 	char *shour = NULL, *smin = NULL;
 	char *rhour = NULL, *rmin = NULL;
 	struct tm tm;
-	struct timeval tv;
 
 	memset(&tm, 0, sizeof(struct tm));
 
@@ -98,38 +105,54 @@ static void callback2(int code, char *data, int size, char *type, void *userdata
 							} else if(json_find_string(jsunr, "minute", &rmin) != 0) {
 								logprintf(LOG_NOTICE, "api.wunderground.com json has no sunrise minute key");
 							} else {
-								time_t timenow = time(NULL);
+
+								time_t timenow;
+								if(time_override > -1) {
+									timenow = time_override;
+								} else {
+									timenow = time(NULL);
+								}
+
 								struct tm current;
 								memset(&current, '\0', sizeof(struct tm));
+								/*
+								 * Retrieving the current day is fine with
+								 * the UTC timezone, because we don't do
+								 * anything with the hours, minutes or seconds.
+								 * We just need to know what day, month, and year
+								 * we are in.
+								 */
 #ifdef _WIN32
-								localtime(&timenow);
+								struct tm *ptm;
+								ptm = gmtime(&timenow);
+								memcpy(&current, ptm, sizeof(struct tm));
 #else
-								localtime_r(&timenow, &current);
+								gmtime_r(&timenow, &current);
 #endif
 
 								int month = current.tm_mon+1;
 								int mday = current.tm_mday;
 								int year = current.tm_year+1900;
-								char *sun = NULL;
+								char *_sun = NULL;
 
-								time_t midnight = (datetime2ts(year, month, mday, 23, 59, 59, 0)+1);
-								time_t sunset = 0;
-								time_t sunrise = 0;
+								time_t midnight = (datetime2ts(year, month, mday, 23, 59, 59)+1);
+								time_t sunset = datetime2ts(year, month, mday, atoi(shour), atoi(smin), 0);
+								time_t sunrise = datetime2ts(year, month, mday, atoi(rhour), atoi(rmin), 0);
 
 								if(timenow > sunrise && timenow < sunset) {
-									sun = "rise";
+									_sun = "rise";
 								} else {
-									sun = "set";
+									_sun = "set";
 								}
 
 								struct reason_code_received_t *data = MALLOC(sizeof(struct reason_code_received_t));
 								if(data == NULL) {
-									OUT_OF_MEMORY
+									OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 								}
 								snprintf(data->message, 1024,
 									"{\"api\":\"%s\",\"location\":\"%s\",\"country\":\"%s\",\"temperature\":%.2f,\"humidity\":%d,\"update\":0,\"sunrise\":%.2f,\"sunset\":%.2f,\"sun\":\"%s\"}",
 									settings->api, settings->location, settings->country, settings->temp, settings->humi,
-									((double)((atoi(rhour)*100)+atoi(rmin))/100), ((double)((atoi(shour)*100)+atoi(smin))/100), sun
+									((double)((atoi(rhour)*100)+atoi(rmin))/100), ((double)((atoi(shour)*100)+atoi(smin))/100), _sun
 								);
 								strncpy(data->origin, "receiver", 255);
 								data->protocol = wunderground->id;
@@ -143,25 +166,38 @@ static void callback2(int code, char *data, int size, char *type, void *userdata
 
 								/* Send message when sun rises */
 								if(sunrise > timenow) {
-									settings->interval = (int)(sunrise-timenow);
+									if((sunrise-timenow) < settings->interval) {
+										settings->interval = (int)(sunrise-timenow);
+									}
 								/* Send message when sun sets */
 								} else if(sunset > timenow) {
-									settings->interval = (int)(sunset-timenow);
+									if((sunset-timenow) < settings->interval) {
+										settings->interval = (int)(sunset-timenow);
+									}
 								/* Update all values when a new day arrives */
 								} else {
-									settings->interval = (int)(midnight-timenow);
+									if((midnight-timenow) < settings->interval) {
+										settings->interval = (int)(midnight-timenow);
+									}
 								}
 
-								settings->update = time(NULL);
-								tv.tv_sec = settings->interval;
-								tv.tv_usec = 0;
-								threadpool_add_scheduled_work(settings->key, thread, tv, (void *)settings);
-								tv.tv_sec = INTERVAL;
-								threadpool_add_scheduled_work(settings->key, thread, tv, (void *)settings);
-								tv.tv_sec = 86400;
-								threadpool_add_scheduled_work(settings->key, thread, tv, (void *)settings);
+								if(time_override > -1) {
+									settings->update = time_override;
+								} else {
+									settings->update = time(NULL);
+								}
 
-								settings->update = time(NULL);
+								/*
+								 * Update all values on next event as described above
+								 */
+								assert(settings->interval > 0);
+								uv_timer_start(settings->update_timer_req, (void (*)(uv_timer_t *))update, settings->interval*1000, 0);
+								/*
+								 * Allow updating the values customly after INTERVAL seconds
+								 */
+								assert(min_interval > 0);
+								uv_timer_start(settings->enable_timer_req, (void (*)(uv_timer_t *))enable, min_interval*1000, 0);
+
 							}
 						} else {
 							logprintf(LOG_NOTICE, "api.wunderground.com json has no sunset and/or sunrise key");
@@ -189,34 +225,50 @@ static void callback1(int code, char *data, int size, char *type, void *userdata
 	struct data_t *settings = userdata;
 	struct JsonNode *jdata = NULL;
 	struct JsonNode *jobs = NULL;
+	struct JsonNode *jloc = NULL;
 	struct JsonNode *node = NULL;
 	char *stmp = NULL;
-	char url[1024];
 
 	if(code == 200) {
 		if(strstr(type, "application/json") != NULL) {
 			if(json_validate(data) == true) {
 				if((jdata = json_decode(data)) != NULL) {
-					if((jobs = json_find_member(jdata, "current_observation")) != NULL) {
-						if((node = json_find_member(jobs, "temp_c")) == NULL) {
-							logprintf(LOG_NOTICE, "api.wunderground.com json has no temp_c key");
-						} else if(json_find_string(jobs, "relative_humidity", &stmp) != 0) {
-							logprintf(LOG_NOTICE, "api.wunderground.com json has no relative_humidity key");
+					if((jloc = json_find_member(jdata, "location")) != NULL) {
+						if((node = json_find_member(jloc, "tz_long")) == NULL) {
+							logprintf(LOG_NOTICE, "api.wunderground.com json has no tz_long key");
 						} else {
-							if(node->tag != JSON_NUMBER) {
-								logprintf(LOG_NOTICE, "api.wunderground.com json has no temp_c key");
+							if(node->tag != JSON_STRING) {
+								logprintf(LOG_NOTICE, "api.wunderground.com json has no tz_long key");
 							} else {
-								settings->temp = node->number_;
-								sscanf(stmp, "%d%%", &settings->humi);
+								strcpy(settings->tz, node->string_);
+								if((jobs = json_find_member(jdata, "current_observation")) != NULL) {
+									if((node = json_find_member(jobs, "temp_c")) == NULL) {
+										logprintf(LOG_NOTICE, "api.wunderground.com json has no temp_c key");
+									} else if(json_find_string(jobs, "relative_humidity", &stmp) != 0) {
+										logprintf(LOG_NOTICE, "api.wunderground.com json has no relative_humidity key");
+									} else {
+										if(node->tag != JSON_NUMBER) {
+											logprintf(LOG_NOTICE, "api.wunderground.com json has no temp_c key");
+										} else {
+											settings->temp = node->number_;
+											sscanf(stmp, "%d%%", &settings->humi);
 
-								memset(url, '\0', 1024);
-								sprintf(url, "http://api.wunderground.com/api/%s/astronomy/q/%s/%s.json", settings->api, settings->country, settings->location);
+											char parsed[1024];
+											char *enc = urlencode(settings->location);
+											memset(parsed, '\0', 1024);
+											snprintf(parsed, 1024, url[1], settings->api, settings->country, enc);
+											FREE(enc);
 
-								http_get_content(url, callback2, userdata);
+											http_get_content(parsed, callback2, userdata);
+										}
+									}
+								} else {
+									logprintf(LOG_NOTICE, "api.wunderground.com json has no current_observation key");
+								}
 							}
 						}
 					} else {
-						logprintf(LOG_NOTICE, "api.wunderground.com json has no current_observation key");
+						logprintf(LOG_NOTICE, "api.wunderground.com json has no location key");
 					}
 					json_delete(jdata);
 				} else {
@@ -234,16 +286,52 @@ static void callback1(int code, char *data, int size, char *type, void *userdata
 	return;
 }
 
+static void thread_free(uv_work_t *req, int status) {
+	FREE(req);
+}
+
+static void thread(uv_work_t *req) {
+	struct data_t *settings = req->data;
+	char parsed[1024];
+	char *enc = urlencode(settings->location);
+
+	memset(parsed, '\0', 1024);
+	snprintf(parsed, 1024, url[0], settings->api, settings->country, enc);
+	FREE(enc);
+
+	http_get_content(parsed, callback1, settings);
+
+	return;
+}
+
 static void *update(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct data_t *settings = task->userdata;
+	uv_timer_t *timer_req = param;
+	struct data_t *settings = timer_req->data;
+
+	uv_work_t *work_req = NULL;
+	if((work_req = MALLOC(sizeof(uv_work_t))) == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+	work_req->data = settings;
+	uv_queue_work(uv_default_loop(), work_req, "wunderground", thread, thread_free);
+	if(time_override > -1) {
+		settings->update = time_override;
+	} else {
+		settings->update = time(NULL);
+	}
+	return NULL;
+}
+
+static void *enable(void *param) {
+	uv_timer_t *timer_req = param;
+	struct data_t *settings = timer_req->data;
 
 	struct reason_code_received_t *data = MALLOC(sizeof(struct reason_code_received_t));
 	if(data == NULL) {
-		OUT_OF_MEMORY
-	}
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	};
 	snprintf(data->message, 1024,
-		"{\"api\":\"%s\",\"location\":\"%s\",\"country\":\"%s\",\"updae\":1}",
+		"{\"api\":\"%s\",\"location\":\"%s\",\"country\":\"%s\",\"update\":1}",
 		settings->api, settings->location, settings->country
 	);
 	strncpy(data->origin, "receiver", 255);
@@ -255,39 +343,68 @@ static void *update(void *param) {
 	}
 	data->repeat = 1;
 	eventpool_trigger(REASON_CODE_RECEIVED, reason_code_received_free, data);
+
 	return NULL;
 }
 
-static void *thread(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct data_t *settings = task->userdata;
-	struct timeval tv;
-	char url[1024];
+static void *adaptDevice(int reason, void *param) {
+	struct JsonNode *jdevice = NULL;
+	struct JsonNode *jchild = NULL;
+	struct JsonNode *jurl = NULL;
 
-	tv.tv_sec = INTERVAL;
-	tv.tv_usec = 0;
-	threadpool_add_scheduled_work(settings->key, thread, tv, (void *)settings);
+	if(param == NULL) {
+		return NULL;
+	}
 
-	memset(url, '\0', 1024);
-	sprintf(url, "http://api.wunderground.com/api/%s/geolookup/conditions/q/%s/%s.json", settings->api, settings->country, settings->location);
+	if((jdevice = json_first_child(param)) == NULL) {
+		return NULL;
+	}
 
-	http_get_content(url, callback1, task->userdata);
-	return (void *)NULL;
+	if(strcmp(jdevice->key, "wunderground") != 0) {
+		return NULL;
+	}
+
+	if((jchild = json_find_member(jdevice, "url")) != NULL) {
+		if(jchild->tag == JSON_OBJECT) {
+			if((jurl = json_find_member(jchild, "conditions")) != NULL) {
+				if(jurl->tag == JSON_STRING && strlen(jurl->string_) < 1024) {
+					strcpy(url[0], jurl->string_);
+				}
+			}
+			if((jurl = json_find_member(jchild, "astronomy")) != NULL) {
+				if(jurl->tag == JSON_STRING && strlen(jurl->string_) < 1024) {
+					strcpy(url[1], jurl->string_);
+				}
+			}
+		}
+	}
+
+	if((jchild = json_find_member(jdevice, "time-override")) != NULL) {
+		if(jchild->tag == JSON_NUMBER) {
+			time_override = jchild->number_;
+		}
+	}
+
+	if((jchild = json_find_member(jdevice, "min-interval")) != NULL) {
+		if(jchild->tag == JSON_NUMBER) {
+			min_interval = jchild->number_;
+		}
+	}
+
+	return NULL;
 }
 
-static void *addDevice(void *param) {
-	struct threadpool_tasks_t *task = param;
+static void *addDevice(int reason, void *param) {
 	struct JsonNode *jdevice = NULL;
 	struct JsonNode *jprotocols = NULL;
 	struct JsonNode *jid = NULL;
 	struct JsonNode *jchild = NULL;
 	struct JsonNode *jchild1 = NULL;
 	struct data_t *node = NULL;
-	struct timeval tv;
 	double itmp = 0;
 	int match = 0;
 
-	if(task->userdata == NULL) {
+	if(param == NULL) {
 		return NULL;
 	}
 
@@ -295,7 +412,7 @@ static void *addDevice(void *param) {
 		return NULL;
 	}
 
-	if((jdevice = json_first_child(task->userdata)) == NULL) {
+	if((jdevice = json_first_child(param)) == NULL) {
 		return NULL;
 	}
 
@@ -315,7 +432,7 @@ static void *addDevice(void *param) {
 	}
 
 	if((node = MALLOC(sizeof(struct data_t)))== NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	memset(node, '\0', sizeof(struct data_t));
 
@@ -336,21 +453,21 @@ static void *addDevice(void *param) {
 				if(strcmp(jchild1->key, "api") == 0) {
 					has_api = 1;
 					if((node->api = MALLOC(strlen(jchild1->string_)+1)) == NULL) {
-						OUT_OF_MEMORY
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
 					strcpy(node->api, jchild1->string_);
 				}
 				if(strcmp(jchild1->key, "location") == 0) {
 					has_location = 1;
 					if((node->location = MALLOC(strlen(jchild1->string_)+1)) == NULL) {
-						OUT_OF_MEMORY
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
 					strcpy(node->location, jchild1->string_);
 				}
 				if(strcmp(jchild1->key, "country") == 0) {
 					has_country = 1;
 					if((node->country = MALLOC(strlen(jchild1->string_)+1)) == NULL) {
-						OUT_OF_MEMORY
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
 					strcpy(node->country, jchild1->string_);
 				}
@@ -381,36 +498,50 @@ static void *addDevice(void *param) {
 	json_find_number(jdevice, "temperature-offset", &node->temp_offset);
 
 	if((node->key = MALLOC(strlen(jdevice->key)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->key, jdevice->key);
 	node->temp = 0.0;
 	node->humi = 0;
 
-	tv.tv_sec = INTERVAL;
-	tv.tv_usec = 0;
-	threadpool_add_scheduled_work(jdevice->key, update, tv, (void *)node);
-	threadpool_add_scheduled_work(jdevice->key, thread, tv, (void *)node);
-	tv.tv_sec = 1;
-	threadpool_add_scheduled_work(jdevice->key, thread, tv, (void *)node);
+	if((node->enable_timer_req = MALLOC(sizeof(uv_timer_t))) == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+	if((node->update_timer_req = MALLOC(sizeof(uv_timer_t))) == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+
+	node->enable_timer_req->data = node;
+	node->update_timer_req->data = node;
+
+	uv_timer_init(uv_default_loop(), node->enable_timer_req);
+	uv_timer_init(uv_default_loop(), node->update_timer_req);
+
+	assert(node->interval > 0);
+	uv_timer_start(node->enable_timer_req, (void (*)(uv_timer_t *))enable, node->interval*1000, 0);
+	/*
+	 * Do an update when this device is added after 3 seconds
+	 * to make sure pilight is actually running.
+	 */
+	uv_timer_start(node->update_timer_req, (void (*)(uv_timer_t *))update, 3000, 0);
 
 	return NULL;
 }
 
 static int checkValues(struct JsonNode *code) {
-	double interval = INTERVAL;
+	double dbl = min_interval;
 
-	json_find_number(code, "poll-interval", &interval);
+	json_find_number(code, "poll-interval", &dbl);
 
-	if((int)round(interval) < INTERVAL) {
-		logprintf(LOG_ERR, "wunderground poll-interval cannot be lower than %d", INTERVAL);
+	if((int)round(dbl) < min_interval) {
+		logprintf(LOG_ERR, "wunderground poll-interval cannot be lower than %d", min_interval);
 		return 1;
 	}
 
 	return 0;
 }
 
-static int createCode(struct JsonNode *code, char *message) {
+static int createCode(struct JsonNode *code, char **message) {
 	struct data_t *tmp = data;
 	char *country = NULL;
 	char *location = NULL;
@@ -431,10 +562,25 @@ static int createCode(struct JsonNode *code, char *message) {
 			if(strcmp(tmp->country, country) == 0
 			   && strcmp(tmp->location, location) == 0
 			   && strcmp(tmp->api, api) == 0) {
+
 				time_t currenttime = time(NULL);
+				if(time_override > -1) {
+					currenttime = time_override;
+				}
+
 				if((currenttime-tmp->update) > INTERVAL) {
-					threadpool_add_work(REASON_END, NULL, tmp->key, 0, thread, NULL, (void *)tmp);
-					tmp->update = time(NULL);
+					uv_work_t *work_req = NULL;
+					if((work_req = MALLOC(sizeof(uv_work_t))) == NULL) {
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+					}
+					work_req->data = tmp;
+					uv_queue_work(uv_default_loop(), work_req, "wunderground", thread, thread_free);
+
+					if(time_override > -1) {
+						tmp->update = time_override;
+					} else {
+						tmp->update = time(NULL);
+					}
 				}
 			}
 			tmp = tmp->next;
@@ -508,6 +654,7 @@ void wundergroundInit(void) {
 	wunderground->printHelp=&printHelp;
 
 	eventpool_callback(REASON_DEVICE_ADDED, addDevice);
+	eventpool_callback(REASON_DEVICE_ADAPT, adaptDevice);
 }
 
 #if defined(MODULE) && !defined(_WIN32)

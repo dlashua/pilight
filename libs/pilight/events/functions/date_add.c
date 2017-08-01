@@ -9,12 +9,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/time.h>
 #ifndef __USE_XOPEN
 	#define __USE_XOPEN
 #endif
 #include <time.h>
+#ifndef _WIN32
+	#include <sys/time.h>
+	#include <unistd.h>
+#endif
 
 #ifdef _WIN32
 #include "../../core/strptime.h"
@@ -29,6 +31,8 @@
 #include "../../core/pilight.h"
 #include "../../core/datetime.h"
 #include "date_add.h"
+
+#define NRUNITS 6
 
 static struct units_t {
 	char name[255];
@@ -71,11 +75,18 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 	struct JsonNode *childs = json_first_child(arguments);
 	struct protocol_t *protocol = NULL;
 	struct tm tm;
-	char *p = *ret, *datetime = NULL, *interval = NULL, **array = NULL;
-	int nrunits = (sizeof(units)/sizeof(units[0])), values[nrunits], error = 0;
+	char *p = NULL, *datetime = NULL, *interval = NULL, **array = NULL;
+	int values[NRUNITS], error = 0;
 	int l = 0, i = 0, type = -1, match = 0, is_dev = 0;
 
-	memset(&values, 0, nrunits);
+	if(ret == NULL || *ret == NULL) {
+		error = -1;
+		goto close;
+	}
+
+	p = *ret;
+
+	memset(&values, 0, NRUNITS);
 
 	if(childs == NULL) {
 		logprintf(LOG_ERR, "DATE_ADD requires two parameters e.g. DATE_ADD(datetime, 1 DAY)");
@@ -83,6 +94,9 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 		goto close;
 	}
 
+	/*
+	 * TESTME
+	 */
 	if(devices_select(origin, childs->string_, NULL) == 0) {
 		is_dev = 1;
 		if(origin == ORIGIN_RULE) {
@@ -131,7 +145,11 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 
 	childs = childs->next;
 	if(childs == NULL) {
-		logprintf(LOG_ERR, "DATE_ADD requires two parameters e.g. DATE_ADD(datetime, 1 DAY)");
+		if(is_dev == 0) {
+			logprintf(LOG_ERR, "DATE_ADD requires two parameters e.g. DATE_ADD(2000-01-01 12:00:00, 1 DAY)");
+		} else {
+			logprintf(LOG_ERR, "DATE_ADD requires two parameters e.g. DATE_ADD(datetime, 1 DAY)");
+		}
 		error = -1;
 		goto close;
 	}
@@ -150,7 +168,7 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 	l = explode(interval, " ", &array);
 	if(l == 2) {
 		if(isNumeric(array[0]) == 0) {
-			for(i=0;i<nrunits;i++) {
+			for(i=0;i<NRUNITS;i++) {
 				if(strcmp(array[1], units[i].name) == 0) {
 					values[i] = atoi(array[0]);
 					type = units[i].id;
@@ -159,20 +177,22 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 				}
 			}
 		} else {
-			logprintf(LOG_ERR, "The DATE_ADD unit parameter requires a number and a unit e.g. \"1 DAY\" instead of \"%%Y-%%m-%%d %%H:%%M:%%S\"");
+			logprintf(LOG_ERR, "The DATE_ADD unit parameter requires a number and a unit e.g. \"1 DAY\"");
 			error = -1;
 			goto close;
 		}
 	} else {
-		logprintf(LOG_ERR, "The DATE_ADD unit parameter is formatted as e.g. \"1 DAY\" instead of \"%%Y-%%m-%%d %%H:%%M:%%S\"");
+		logprintf(LOG_ERR, "The DATE_ADD unit parameter is formatted as e.g. \"1 DAY\"");
 		error = -1;
 		goto close;
 	}
+
 	if(match == 0) {
 		logprintf(LOG_ERR, "DATE_ADD does not accept \"%s\" as a unit", array[1]);
 		error = -1;
 		goto close;
 	}
+
 	if(is_dev == 0) {
 		if(strptime(datetime, "%Y-%m-%d %H:%M:%S", &tm) == NULL) {
 			logprintf(LOG_ERR, "DATE_ADD requires the datetime parameter to be formatted as \"%%Y-%%m-%%d %%H:%%M:%%S\"");
@@ -188,10 +208,11 @@ static int run(struct rules_t *obj, struct JsonNode *arguments, char **ret, enum
 	int hour = tm.tm_hour;
 	int minute = tm.tm_min;
 	int second = tm.tm_sec;
+	int weekday = 0;
 
-	datefix(&year, &month, &day, &hour, &minute, &second);
+	datefix(&year, &month, &day, &hour, &minute, &second, &weekday);
 
-	snprintf(p, BUFFER_SIZE, "\"%04d-%02d-%02d %02d:%02d:%02d\"", year, month, day, hour, minute, second);
+	snprintf(p, BUFFER_SIZE, "%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
 
 close:
 	array_free(&array, l);

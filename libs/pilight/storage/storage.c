@@ -12,9 +12,9 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <unistd.h>
 #include <ctype.h>
 #ifndef _WIN32
+	#include <unistd.h>
 	#include <regex.h>
 	#include <sys/ioctl.h>
 	#include <dlfcn.h>
@@ -25,9 +25,8 @@
 #endif
 #include <sys/stat.h>
 #include <time.h>
-#include <libgen.h>
-#include <dirent.h>
 #include <math.h>
+#include <wiringx.h>
 
 #include "../hardware/hardware.h"
 #include "../protocols/protocol.h"
@@ -35,16 +34,13 @@
 #include "../core/datetime.h"
 #include "../core/json.h"
 #include "../core/log.h"
-#include "../core/threadpool.h"
 #include "../events/events.h"
 #include "../events/action.h"
-#include "../../wiringx/wiringX.h"
-#include "../../wiringx/platform/platform.h"
 #include "storage.h"
 
 #include "json.h"
 
-static void *storage_import_thread(void *param);
+static void *storage_import_thread(int, void *);
 
 static void *reason_config_update_free(void *param) {
 	struct reason_config_update_t *data = param;
@@ -72,23 +68,48 @@ static struct JsonNode *jsettings_cache = NULL;
 static struct JsonNode *jhardware_cache = NULL;
 static struct JsonNode *jregistry_cache = NULL;
 
-static void *devices_update_cache(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct reason_config_update_t *data = task->userdata;
+static void *devices_update_cache(int reason, void *param) {
+	struct reason_config_update_t *data = param;
+	struct reason_config_updated_t *data1 = MALLOC(sizeof(struct reason_config_updated_t));
 
 	struct JsonNode *jcdev_childs = json_first_child(jdevices_cache);
 	struct JsonNode *jvalue = NULL;
 	struct device_t *dev = NULL;
 	int i = 0, x = 0;
 
+	/*
+	 * FIXME: clone reason_config_update_t
+	 */
+	if(data1 == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}	
+
+	data1->type = data->type;
+	data1->nrdev = data->nrdev;
+	data1->timestamp = data->timestamp;
+	if(data->uuid != NULL) {
+		data1->uuid = data->uuid;
+	}
+	strcpy(data1->origin, data->origin);
+
 	for(i=0;i<data->nrdev;i++) {
+		strcpy(data1->devices[i], data->devices[i]);
 		if(devices_select_struct(ORIGIN_CONFIG, data->devices[i], &dev) == 0) {
 			dev->timestamp = (time_t)data->timestamp;
 		}
 		while(jcdev_childs) {
 			if(strcmp(jcdev_childs->key, "timestamp") != 0 &&
 			   strcmp(jcdev_childs->key, data->devices[i]) == 0) {
+				data1->nrval = data->nrval;
 				for(x=0;x<data->nrval;x++) {
+					strcpy(data1->values[x].name, data->values[x].name);
+					data1->values[x].type = data->values[x].type;
+					if(data->values[x].type == JSON_NUMBER) {
+						data1->values[x].number_ = data->values[x].number_;
+						data1->values[x].decimals = data->values[x].decimals;
+					} else if(data->values[x].type == JSON_STRING) {
+						strcpy(data1->values[x].string_, data->values[x].string_);
+					}
 					if((jvalue = json_find_member(jcdev_childs, data->values[x].name)) != NULL) {
 						if(data->values[x].type == JSON_NUMBER) {
 							if(jvalue->tag == JSON_STRING) {
@@ -103,7 +124,7 @@ static void *devices_update_cache(void *param) {
 								jvalue->string_ = NULL;
 							}
 							if((jvalue->string_ = REALLOC(jvalue->string_, strlen(data->values[x].string_)+1)) == NULL) {
-								OUT_OF_MEMORY
+								OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 							}
 							strcpy(jvalue->string_, data->values[x].string_);
 							jvalue->tag = JSON_STRING;
@@ -114,23 +135,24 @@ static void *devices_update_cache(void *param) {
 			jcdev_childs = jcdev_childs->next;
 		}
 	}
+
+	eventpool_trigger(REASON_CONFIG_UPDATED, reason_config_update_free, data1);
 	return NULL;
 }
 
-void *config_values_update(void *param) {
-	struct threadpool_tasks_t *task = param;
-	char *protoname = NULL, *origin = NULL, *message = NULL, *uuid = NULL, *settings = NULL;
+void *config_values_update(int reason, void *param) {
+	char *protoname = NULL, *origin = NULL, *message = NULL, *uuid = NULL/*, *settings = NULL*/;
 
-	switch(task->reason) {
+	switch(reason) {
 		case REASON_CODE_RECEIVED: {
-			struct reason_code_received_t *data = task->userdata;
+			struct reason_code_received_t *data = param;
 			protoname = data->protocol;
 			origin = data->origin;
 			message = data->message;
 			uuid = data->uuid;
 		} break;
 		case REASON_CODE_SENT: {
-			struct reason_code_sent_t *data = task->userdata;
+			struct reason_code_sent_t *data = param;
 			if(strlen(data->protocol) > 0) {
 				protoname = data->protocol;
 			}
@@ -138,14 +160,10 @@ void *config_values_update(void *param) {
 			if(strlen(data->uuid) > 0) {
 				uuid = data->uuid;
 			}
-			if(strlen(data->settings) > 0) {
+			/*if(strlen(data->settings) > 0) {
 				settings = data->settings;
-			}
+			}*/
 			origin = data->origin;
-
-			int l = strlen(message);
-			memmove(&message[0], &message[10], l-10);
-			message[l-10] = '\0';
 		} break;
 		default: {
 			return NULL;
@@ -157,22 +175,23 @@ void *config_values_update(void *param) {
 	}
 
 	struct JsonNode *jmessage = json_decode(message);
-	struct JsonNode *jsettings = NULL;
+	//struct JsonNode *jsettings = NULL;
 	struct JsonNode *jdevices = json_first_child(jdevices_cache);
 	struct JsonNode *jchilds = NULL;
 	struct JsonNode *jprotocols = NULL;
 	struct JsonNode *jids = NULL;
 	struct JsonNode *jtmp = NULL;
 
-	if(settings != NULL) {
-		jsettings = json_decode(settings);
+	if((jtmp = json_first_child(jmessage)) != NULL && strcmp(jtmp->key, "message") == 0) {
+		struct JsonNode *jclone = NULL;
+		json_clone(jtmp, &jclone);
+		json_delete(jmessage);
+		jmessage = jclone;
 	}
 
-	struct reason_config_update_t *data = MALLOC(sizeof(struct reason_config_update_t));
-	if(data == NULL) {
-		OUT_OF_MEMORY
-	}
-	memset(data, 0, sizeof(struct reason_config_update_t));
+	/*if(settings != NULL) {
+		jsettings = json_decode(settings);
+	}*/
 
 	struct protocol_t *protocol = NULL;
 	struct options_t *opt = NULL;
@@ -185,20 +204,26 @@ void *config_values_update(void *param) {
 	if(strlen(protoname) == 0) {
 		logprintf(LOG_ERR, "config values update message misses a protocol field");
 		json_delete(jmessage);
-		if(jsettings != NULL) {
+		/*if(jsettings != NULL) {
 			json_delete(jsettings);
-		}
+		}*/
 		return NULL;
 	}
 
-	if(strlen(uuid) == 0) {
+	if(uuid == NULL || strlen(uuid) == 0) {
 		logprintf(LOG_ERR, "config values update message misses a uuid field");
 		json_delete(jmessage);
-		if(jsettings != NULL) {
+		/*if(jsettings != NULL) {
 			json_delete(jsettings);
-		}
+		}*/
 		return NULL;
 	}
+
+	struct reason_config_update_t *data = MALLOC(sizeof(struct reason_config_update_t));
+	if(data == NULL) {
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+	}
+	memset(data, 0, sizeof(struct reason_config_update_t));
 
 	/* Retrieve the used protocol */
 	struct protocols_t *pnode = protocols;
@@ -220,8 +245,7 @@ void *config_values_update(void *param) {
 #else
 	gmtime_r(&timenow, &gmt);
 #endif
-	char utc[] = "UTC";
-	time_t utct = datetime2ts(gmt.tm_year+1900, gmt.tm_mon+1, gmt.tm_mday, gmt.tm_hour, gmt.tm_min, gmt.tm_sec, utc);
+	time_t utct = datetime2ts(gmt.tm_year+1900, gmt.tm_mon+1, gmt.tm_mday, gmt.tm_hour, gmt.tm_min, gmt.tm_sec);
 	data->timestamp = utct;
 
 	if((opt = protocol->options)) {
@@ -256,20 +280,15 @@ void *config_values_update(void *param) {
 				uuidmatch = 1;
 			}
 			if(uuidmatch == 1) {
+				/*
+				 * Check if the received protocol is configured.
+				 */
 				jprotocols = json_find_member(jdevices, "protocol");
 				jchilds = json_first_child(jprotocols);
 				while(jchilds) {
 					if(jchilds->tag == JSON_STRING) {
-						struct protocols_t *tmp_protocols = protocols;
-						match = 0;
-						while(tmp_protocols) {
-							if(protocol_device_exists(tmp_protocols->listener, jchilds->string_) == 0) {
-								match = 1;
-								break;
-							}
-							tmp_protocols = tmp_protocols->next;
-						}
-						if(match == 1) {
+						if(protocol_device_exists(protocol, jchilds->string_) == 0) {
+							match = 1;
 							break;
 						}
 					}
@@ -290,7 +309,6 @@ void *config_values_update(void *param) {
 						}
 						opt = opt->next;
 					}
-
 					jids = json_find_member(jdevices, "id");
 					jchilds = json_first_child(jids);
 					while(jchilds) {
@@ -321,6 +339,7 @@ void *config_values_update(void *param) {
 					}
 
 					is_valid = 1;
+
 					if(match1 > 0 && match2 > 0 && match1 == match2) {
 						struct JsonNode *jcode = json_mkobject();
 						if(json_find_string(jdevices, "state", &stmp) == 0 &&
@@ -380,7 +399,7 @@ void *config_values_update(void *param) {
 							opt = opt->next;
 						}
 						if(protocol->checkValues != NULL) {
-							struct JsonNode *jchilds = json_first_child(jsettings);
+							/*struct JsonNode *jchilds = json_first_child(jsettings);
 							while(jchilds) {
 								if(jchilds->tag == JSON_NUMBER) {
 									json_append_member(jcode, jchilds->key, json_mknumber(jchilds->number_, jchilds->decimals_));
@@ -388,7 +407,7 @@ void *config_values_update(void *param) {
 									json_append_member(jcode, jchilds->key, json_mkstring(jchilds->string_));
 								}
 								jchilds = jchilds->next;
-							}
+							}*/
 							if(protocol->checkValues(jcode) != 0) {
 								update = 0;
 							}
@@ -406,31 +425,31 @@ void *config_values_update(void *param) {
 			jdevices = jdevices->next;
 		}
 	}
+
 	if(final_update == 1) {
 		strncpy(data->origin, "update", 255);
 		data->type = (int)protocol->devtype;
 		if(strlen(pilight_uuid) > 0 && (protocol->hwtype == SENSOR || protocol->hwtype == HWRELAY)) {
 			data->uuid = pilight_uuid;
 		}
-
 		eventpool_trigger(REASON_CONFIG_UPDATE, reason_config_update_free, data);
 	} else {
 		FREE(data);
 	}
 	json_delete(jmessage);
-	if(jsettings != NULL) {
+	/*if(jsettings != NULL) {
 		json_delete(jsettings);
-	}
+	}*/
 
 	return NULL;
 }
 
 void storage_register(struct storage_t **s, const char *id) {
 	if((*s = MALLOC(sizeof(struct storage_t))) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	if(((*s)->id = MALLOC(strlen(id)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy((*s)->id, id);
 	(*s)->sync = NULL;
@@ -462,10 +481,10 @@ void devices_struct_parse(struct JsonNode *jdevices, int i) {
 	struct device_t *node = MALLOC(sizeof(struct device_t));
 	memset(node, 0, sizeof(struct device_t));
 	if(node == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	if((node->id = MALLOC(strlen(jdevices->key)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->id, jdevices->key);
 	node->timestamp = 0;
@@ -486,7 +505,7 @@ void devices_struct_parse(struct JsonNode *jdevices, int i) {
 				protocol = tmp_protocols->listener;
 				if(protocol_device_exists(protocol, jchilds->string_) == 0) {
 					if((node->protocols = REALLOC(node->protocols, (sizeof(struct protocol_t *)*(size_t)(node->nrprotocols+1)))) == NULL) {
-						OUT_OF_MEMORY
+						OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 					}
 					node->protocols[node->nrprotocols] = protocol;
 					node->nrprotocols++;
@@ -979,7 +998,7 @@ void devices_init_event_threads(struct JsonNode *jdevices, int i) {
 		return;
 	}
 
-	event_action_thread_init(nodes);
+	// event_action_thread_init(nodes);
 }
 
 void devices_init_protocol_threads(struct JsonNode *jdevices, int i) {
@@ -1008,7 +1027,7 @@ void devices_init_protocol_threads(struct JsonNode *jdevices, int i) {
 		int l = strlen(cpy)+6+strlen(jdevices->key);
 		char *output = MALLOC(l);
 		if(output == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		snprintf(output, l, "{\"%s\":%s}", jdevices->key, cpy);
 		eventpool_trigger(REASON_DEVICE_ADDED, reason_device_added_free, json_decode(output));
@@ -1116,7 +1135,7 @@ int rules_struct_parse(struct JsonNode *jrules, int i) {
 
 	struct rules_t *node = MALLOC(sizeof(struct rules_t));
 	if(node == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	node->next = NULL;
 	node->values = NULL;
@@ -1127,21 +1146,26 @@ int rules_struct_parse(struct JsonNode *jrules, int i) {
 	node->jtrigger = NULL;
 	node->nr = i;
 	if((node->name = MALLOC(strlen(jrules->key)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->name, jrules->key);
+
+#ifndef _WIN32
 	clock_gettime(CLOCK_MONOTONIC, &node->timestamp.first);
+#endif
 	if(event_parse_rule(rule, node, 0, 1) == -1) {
 		have_error = -1;
 	}
+#ifndef _WIN32
 	clock_gettime(CLOCK_MONOTONIC, &node->timestamp.second);
 	logprintf(LOG_INFO, "rule #%d %s was parsed in %.6f seconds", node->nr, node->name,
 		((double)node->timestamp.second.tv_sec + 1.0e-9*node->timestamp.second.tv_nsec) -
 		((double)node->timestamp.first.tv_sec + 1.0e-9*node->timestamp.first.tv_nsec));
+#endif
 
 	node->status = 0;
 	if((node->rule = MALLOC(strlen(rule)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(node->rule, rule);
 	node->active = (unsigned short)active;
@@ -1397,7 +1421,9 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 	memset(&regex, '\0', sizeof(regex));
 #endif
 
-	if(strcmp(jsettings->key, "port") == 0) {
+	if(strcmp(jsettings->key, "port") == 0 ||
+	   strcmp(jsettings->key, "arp-interval") == 0 ||
+		 strcmp(jsettings->key, "arp-timeout") == 0) {
 		if(jsettings->tag != JSON_NUMBER) {
 			if(i > 0) {
 				logprintf(LOG_ERR, "config setting #%d \"%s\" must contain a number larger than 0", i, jsettings->key);
@@ -1440,7 +1466,7 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 			return -1;
 		} else {
 			if(strcmp(jsettings->string_, "none") != 0) { 				
-				if(wiringXSetup(jsettings->string_, logprintf) != 0 && i > 0) {
+				if(wiringXSetup(jsettings->string_, _logprintf) != 0 && i > 0) {
 					logprintf(LOG_ERR, "config setting #%d \"%s\" must contain a supported gpio platform", i, jsettings->key);
 				}
 			}
@@ -1475,7 +1501,11 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 #ifndef _WIN32
 			|| strcmp(jsettings->key, "pid-file") == 0
 #endif
-			|| strcmp(jsettings->key, "pem-file") == 0) {
+			|| strcmp(jsettings->key, "pem-file") == 0
+#ifdef WEBSERVER
+			|| strcmp(jsettings->key, "webserver-root") == 0
+#endif
+		) {
 		if(jsettings->tag != JSON_STRING) {
 			if(i > 0) {
 				logprintf(LOG_ERR, "config setting #%d \"%s\" must contain an existing file", i, jsettings->key);
@@ -1487,12 +1517,27 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 			}
 			return -1;
 		} else {
-			if(path_exists(jsettings->string_) != EXIT_SUCCESS) {
+			char *dir = NULL;
+			char *cpy = STRDUP(jsettings->string_);
+			if(cpy == NULL) {
+				OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
+			}
+
+
+			if((dir = _dirname(cpy)) == NULL) {
+				logprintf(LOG_ERR, "could not open logfile %s", log);
+				atomicunlock();
+				return -1;
+			}
+
+			if(path_exists(dir) != EXIT_SUCCESS) {
 				if(i > 0) {
 					logprintf(LOG_ERR, "config setting #%d \"%s\" must point to an existing folder", i, jsettings->key);
 				}
+				FREE(cpy);
 				return -1;
 			}
+			FREE(cpy);
 		}
 	} else if(strcmp(jsettings->key, "whitelist") == 0) {
 		if(jsettings->tag != JSON_STRING) {
@@ -1557,18 +1602,6 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 		} else if(jsettings->number_ < -1) {
 			if(i > 0) {
 				logprintf(LOG_ERR, "config setting #%d \"%s\" must contain a number larger than 0", i, jsettings->key);
-			}
-			return -1;
-		}
-	} else if(strcmp(jsettings->key, "webserver-root") == 0) {
-		if(jsettings->tag != JSON_STRING) {
-			if(i > 0) {
-				logprintf(LOG_ERR, "config setting #%d \"%s\" must contain a valid path", i, jsettings->key);
-			}
-			return -1;
-		} else if(!jsettings->string_ || path_exists(jsettings->string_) != 0) {
-			if(i > 0) {
-				logprintf(LOG_ERR, "config setting #%d \"%s\" must contain a valid path", i, jsettings->key);
 			}
 			return -1;
 		}
@@ -1704,6 +1737,18 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 			}
 			return -1;
 		}
+	} else if(strcmp(jsettings->key, "smtp-ssl") == 0) {
+		if(jsettings->tag != JSON_NUMBER) {
+			if(i > 0) {
+				logprintf(LOG_ERR, "config setting #%d \"%s\" must be either 0 or 1", i, jsettings->key);
+			}
+			return -1;
+		} else if(jsettings->number_ < 0 || jsettings->number_ > 1) {
+			if(i > 0) {
+				logprintf(LOG_ERR, "config setting #%d \"%s\" must be either 0 or 1", i, jsettings->key);
+			}
+			return -1;
+		}
 	} else if(strcmp(jsettings->key, "smtp-host") == 0) {
 		if(jsettings->tag != JSON_STRING) {
 			if(i > 0) {
@@ -1715,7 +1760,7 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 				logprintf(LOG_ERR, "config setting #%d \"%s\" must contain an smtp host address", i, jsettings->key);
 			}
 			return -1;
-		} else if(strlen(jsettings->string_) > 0) {
+		} /*else if(strlen(jsettings->string_) > 0) {
 #if !defined(__FreeBSD__) && !defined(_WIN32)
 			char validate[] = "^([a-zA-Z0-9\\_\\-]){2,20}(\\.([a-zA-Z0-9\\_\\-]){2,20}){2,3}$";
 			reti = regcomp(&regex, validate, REG_EXTENDED);
@@ -1735,14 +1780,9 @@ int settings_validate_settings(struct JsonNode *jsettings, int i) {
 			}
 			regfree(&regex);
 #endif
-		}
+		}*/
 	} else if(strcmp(jsettings->key, "smtp-port") == 0) {
 		if(jsettings->tag != JSON_NUMBER) {
-			if(i > 0) {
-				logprintf(LOG_ERR, "config setting #%d \"%s\" must be 25, 465 or 587", i, jsettings->key);
-			}
-			return -1;
-		} else if((int)jsettings->number_ != 25 && (int)jsettings->number_ != 465 && (int)jsettings->number_ != 587) {
 			if(i > 0) {
 				logprintf(LOG_ERR, "config setting #%d \"%s\" must be 25, 465 or 587", i, jsettings->key);
 			}
@@ -1947,12 +1987,12 @@ int hardware_validate_settings(struct JsonNode *jhardware, int i) {
 							l = 2;
 						}
 						if((stmp = REALLOC(stmp, l+1)) == NULL) {
-							OUT_OF_MEMORY
+							OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 						}
 						snprintf(stmp, l, "%d", (int)jvalues->number_);
 					} else if(jvalues->tag == JSON_STRING) {
 						if((stmp = REALLOC(stmp, strlen(jvalues->string_)+1)) == NULL) {
-							OUT_OF_MEMORY
+							OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 						}
 						strcpy(stmp, jvalues->string_);
 					}
@@ -2059,7 +2099,7 @@ int storage_devices_validate(struct JsonNode *jdevices) {
 		if(devices_validate_id(jdevices, i) == -1) { return -1; }
 
 		devices_init_protocol_threads(jdevices, i);
-		devices_init_event_threads(jdevices, i);
+		// devices_init_event_threads(jdevices, i);
 
 		jdevices = jdevices->next;
 	}
@@ -2197,9 +2237,8 @@ int storage_read(char *file, unsigned long objects) {
 	return 0;
 }
 
-static void *storage_import_thread(void *param) {
-	struct threadpool_tasks_t *task = param;
-	struct JsonNode *jconfig = task->userdata;
+static void *storage_import_thread(int reason, void *param) {
+	struct JsonNode *jconfig = param;
 
 	storage_import(jconfig);
 	return NULL;
@@ -2710,7 +2749,7 @@ static int registry_set_value_recursive(struct JsonNode *root, const char *key, 
 				member->decimals_ = decimals;
 			} else if(type == JSON_STRING) {
 				if((member->string_ = REALLOC(member->string_, strlen(svalue)+1)) == NULL) {
-					OUT_OF_MEMORY
+					OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 				}
 				strcpy(member->string_, svalue);
 			}
@@ -2875,7 +2914,7 @@ int devices_gc(void) {
 
 	while(device) {
 		tmp_device = device;
-		event_action_thread_free(tmp_device);
+		// event_action_thread_free(tmp_device);
 		FREE(tmp_device->id);
 		if(tmp_device->action_thread != NULL) {
 			FREE(tmp_device->action_thread);

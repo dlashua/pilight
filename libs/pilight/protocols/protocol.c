@@ -9,16 +9,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
-#include <sys/time.h>
 #include <sys/stat.h>
 #ifndef _WIN32
 	#ifdef __mips__
 		#define __USE_UNIX98
 	#endif
+	#include <sys/time.h>
 #endif
 #define __USE_UNIX98
-#include <pthread.h>
 
 #include "../core/pilight.h"
 #include "../core/common.h"
@@ -98,7 +96,7 @@ void protocol_init(void) {
 	if(settings_select_string(ORIGIN_MASTER, "protocol-root", &protocol_root) != 0) {
 		/* If no protocol root was set, use the default protocol root */
 		if((protocol_root = MALLOC(strlen(PROTOCOL_ROOT)+1)) == NULL) {
-			OUT_OF_MEMORY
+			OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 		}
 		strcpy(protocol_root, PROTOCOL_ROOT);
 		protocol_root_free = 1;
@@ -175,11 +173,12 @@ void protocol_init(void) {
 void protocol_register(protocol_t **proto) {
 
 	if((*proto = MALLOC(sizeof(struct protocol_t))) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	(*proto)->options = NULL;
 	(*proto)->devices = NULL;
 
+	(*proto)->id = NULL;
 	(*proto)->rawlen = 0;
 	(*proto)->minrawlen = 0;
 	(*proto)->maxrawlen = 0;
@@ -188,11 +187,14 @@ void protocol_register(protocol_t **proto) {
 	(*proto)->txrpt = 10;
 	(*proto)->rxrpt = 1;
 	(*proto)->hwtype = NONE;
+	(*proto)->devtype = RAW;
 	(*proto)->multipleId = 1;
 	(*proto)->config = 1;
 	(*proto)->masterOnly = 0;
+	(*proto)->options = NULL;
 	(*proto)->parseCode = NULL;
 	(*proto)->parseCommand = NULL;
+	(*proto)->validate = NULL;
 	(*proto)->createCode = NULL;
 	(*proto)->checkValues = NULL;
 	(*proto)->initDev = NULL;
@@ -208,7 +210,7 @@ void protocol_register(protocol_t **proto) {
 
 	struct protocols_t *pnode = MALLOC(sizeof(struct protocols_t));
 	if(pnode == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	pnode->listener = *proto;
 	pnode->next = protocols;
@@ -219,14 +221,14 @@ struct protocol_threads_t *protocol_thread_init(protocol_t *proto, struct JsonNo
 
 	struct protocol_threads_t *node = MALLOC(sizeof(struct protocol_threads_t));
 	if(node == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 
 	node->param = param;
-	pthread_mutexattr_init(&node->attr);
-	pthread_mutexattr_settype(&node->attr, PTHREAD_MUTEX_RECURSIVE);
-	pthread_mutex_init(&node->mutex, &node->attr);
-	pthread_cond_init(&node->cond, NULL);
+	// pthread_mutexattr_init(&node->attr);
+	// pthread_mutexattr_settype(&node->attr, PTHREAD_MUTEX_RECURSIVE);
+	// pthread_mutex_init(&node->mutex, &node->attr);
+	// pthread_cond_init(&node->cond, NULL);
 	node->next = proto->threads;
 	proto->threads = node;
 
@@ -238,7 +240,7 @@ int protocol_thread_wait(struct protocol_threads_t *node, int interval, int *nrl
 	struct timeval tp;
 	struct timespec ts;
 
-	pthread_mutex_unlock(&node->mutex);
+	// pthread_mutex_unlock(&node->mutex);
 
 	gettimeofday(&tp, NULL);
 	ts.tv_sec = tp.tv_sec;
@@ -251,9 +253,10 @@ int protocol_thread_wait(struct protocol_threads_t *node, int interval, int *nrl
 		ts.tv_sec += interval;
 	}
 
-	pthread_mutex_lock(&node->mutex);
+	// pthread_mutex_lock(&node->mutex);
 
-	return pthread_cond_timedwait(&node->cond, &node->mutex, &ts);
+	// return pthread_cond_timedwait(&node->cond, &node->mutex, &ts);
+	return 0;
 }
 
 void protocol_thread_stop(protocol_t *proto) {
@@ -261,8 +264,8 @@ void protocol_thread_stop(protocol_t *proto) {
 	if(proto != NULL && proto->threads != NULL ) {
 		struct protocol_threads_t *tmp = proto->threads;
 		while(tmp) {
-			pthread_mutex_unlock(&tmp->mutex);
-			pthread_cond_signal(&tmp->cond);
+			// pthread_mutex_unlock(&tmp->mutex);
+			// pthread_cond_signal(&tmp->cond);
 			tmp = tmp->next;
 		}
 	}
@@ -289,7 +292,7 @@ void protocol_thread_free(protocol_t *proto) {
 void protocol_set_id(protocol_t *proto, const char *id) {
 
 	if((proto->id = MALLOC(strlen(id)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(proto->id, id);
 }
@@ -298,14 +301,14 @@ void protocol_device_add(protocol_t *proto, const char *id, const char *desc) {
 
 	struct protocol_devices_t *dnode = MALLOC(sizeof(struct protocol_devices_t));
 	if(dnode == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	if((dnode->id = MALLOC(strlen(id)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(dnode->id, id);
 	if((dnode->desc = MALLOC(strlen(desc)+1)) == NULL) {
-		OUT_OF_MEMORY
+		OUT_OF_MEMORY /*LCOV_EXCL_LINE*/
 	}
 	strcpy(dnode->desc, desc);
 	dnode->next	= proto->devices;
